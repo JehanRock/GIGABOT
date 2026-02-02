@@ -46,6 +46,15 @@ class ModelHealth:
         if self.healthy:
             return True
         return time.time() >= self.cooldown_until
+    
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "model": self.model,
+            "healthy": self.healthy,
+            "failure_count": self.failure_count,
+            "available": self.is_available(),
+        }
 
 
 @dataclass
@@ -193,6 +202,11 @@ class TieredRouter:
             if task_str in tier.triggers:
                 return tier_name
         return None
+    
+    @property
+    def model_health(self) -> dict[str, ModelHealth]:
+        """Get the model health dictionary."""
+        return self._model_health
     
     def get_statistics(self) -> dict[str, Any]:
         """Get routing statistics."""

@@ -5,11 +5,14 @@ Provides process control for:
 - Listing running processes
 - Starting/stopping processes
 - Background process management
+- Dev server management with ready detection
 """
 
 import asyncio
 import os
+import re
 import signal
+import time
 from typing import Any
 
 from nanobot.agent.tools.base import BaseTool
@@ -17,7 +20,7 @@ from nanobot.agent.tools.base import BaseTool
 
 class ProcessTool(BaseTool):
     """
-    Process management tool.
+    Process management tool with dev server support.
     
     Supports:
     - list: List managed processes
@@ -25,10 +28,12 @@ class ProcessTool(BaseTool):
     - stop: Stop a process by ID
     - status: Get process status
     - signal: Send signal to process
+    - start_dev_server: Start a dev server and wait for it to be ready
+    - get_output: Get recent output from a process
     """
     
     name = "process"
-    description = """Manage background processes.
+    description = """Manage background processes and dev servers.
     
 Actions:
 - list: List all managed processes
@@ -36,12 +41,18 @@ Actions:
 - stop: Stop a process by ID
 - status: Get status of a process
 - signal: Send a signal to a process
+- start_dev_server: Start a dev server with ready detection
+- get_output: Get recent stdout/stderr from a process
 
-Examples:
+Dev Server Examples:
+- Start npm dev: {"action": "start_dev_server", "command": "npm run dev", "port": 3000}
+- Start with pattern: {"action": "start_dev_server", "command": "vite", "port": 5173, "ready_pattern": "ready in"}
+
+Regular Process Examples:
 - List: {"action": "list"}
 - Start: {"action": "start", "command": "python script.py", "name": "my-script"}
 - Stop: {"action": "stop", "id": "abc123"}
-- Status: {"action": "status", "id": "abc123"}
+- Get output: {"action": "get_output", "id": "abc123"}
 """
     
     parameters = {
@@ -49,12 +60,12 @@ Examples:
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["list", "start", "stop", "status", "signal"],
+                "enum": ["list", "start", "stop", "status", "signal", "start_dev_server", "get_output"],
                 "description": "The process action to perform"
             },
             "command": {
                 "type": "string",
-                "description": "Command for start action"
+                "description": "Command for start/start_dev_server action"
             },
             "name": {
                 "type": "string",
@@ -62,7 +73,7 @@ Examples:
             },
             "id": {
                 "type": "string",
-                "description": "Process ID for stop/status/signal actions"
+                "description": "Process ID for stop/status/signal/get_output actions"
             },
             "signal_name": {
                 "type": "string",
@@ -73,6 +84,19 @@ Examples:
             "working_dir": {
                 "type": "string",
                 "description": "Working directory for start action"
+            },
+            "port": {
+                "type": "integer",
+                "description": "Port for dev server (used in naming and ready check)"
+            },
+            "ready_pattern": {
+                "type": "string",
+                "description": "Regex pattern to detect when server is ready (default: ready|listening|started|compiled)"
+            },
+            "timeout": {
+                "type": "integer",
+                "description": "Timeout in seconds for ready detection (default: 30)",
+                "default": 30
             }
         },
         "required": ["action"]
@@ -82,6 +106,7 @@ Examples:
         self.working_dir = working_dir
         self._processes: dict[str, dict[str, Any]] = {}
         self._counter = 0
+        self._output_buffers: dict[str, list[str]] = {}
     
     async def execute(self, **kwargs: Any) -> str:
         """Execute process action."""
@@ -109,6 +134,18 @@ Examples:
                     kwargs.get("id", ""),
                     kwargs.get("signal_name", "SIGTERM"),
                 )
+            
+            elif action == "start_dev_server":
+                return await self._start_dev_server(
+                    kwargs.get("command", ""),
+                    kwargs.get("port", 3000),
+                    kwargs.get("ready_pattern", "ready|listening|started|compiled|Local:"),
+                    kwargs.get("timeout", 30),
+                    kwargs.get("working_dir", self.working_dir),
+                )
+            
+            elif action == "get_output":
+                return self._get_output(kwargs.get("id", ""))
             
             else:
                 return f"Unknown action: {action}"
@@ -252,6 +289,142 @@ Examples:
         
         return f"Sent {signal_name} to process {pid}"
     
+    async def _start_dev_server(
+        self,
+        command: str,
+        port: int = 3000,
+        ready_pattern: str = "ready|listening|started|compiled|Local:",
+        timeout: int = 30,
+        working_dir: str = "",
+    ) -> str:
+        """
+        Start a dev server and wait for it to be ready.
+        
+        Args:
+            command: The command to start the dev server.
+            port: The port the server runs on (for naming).
+            ready_pattern: Regex pattern to detect server ready.
+            timeout: Maximum seconds to wait for ready.
+            working_dir: Working directory.
+        
+        Returns:
+            Status message indicating success or failure.
+        """
+        if not command:
+            return "Error: Command required for start_dev_server action"
+        
+        # Stop any existing server on same port
+        for pid, info in list(self._processes.items()):
+            if info.get("port") == port:
+                await self._stop_process(pid)
+        
+        pid = self._generate_id()
+        name = f"dev-server-{port}"
+        cwd = working_dir or self.working_dir or None
+        
+        # Start process with combined stdout/stderr
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=cwd,
+        )
+        
+        self._processes[pid] = {
+            "process": proc,
+            "command": command,
+            "name": name,
+            "cwd": cwd,
+            "pid": proc.pid,
+            "port": port,
+            "is_dev_server": True,
+            "ready": False,
+            "start_time": time.time(),
+        }
+        
+        self._output_buffers[pid] = []
+        
+        # Wait for ready pattern
+        ready = False
+        pattern = re.compile(ready_pattern, re.IGNORECASE)
+        start_time = time.time()
+        
+        try:
+            while time.time() - start_time < timeout:
+                if proc.returncode is not None:
+                    # Process exited
+                    output = "\n".join(self._output_buffers.get(pid, []))
+                    return f"Dev server exited with code {proc.returncode}.\nOutput:\n{output[-1000:]}"
+                
+                try:
+                    line = await asyncio.wait_for(
+                        proc.stdout.readline(),
+                        timeout=1.0
+                    )
+                    if line:
+                        decoded = line.decode("utf-8", errors="replace").strip()
+                        self._output_buffers[pid].append(decoded)
+                        
+                        # Keep buffer size manageable
+                        if len(self._output_buffers[pid]) > 100:
+                            self._output_buffers[pid] = self._output_buffers[pid][-50:]
+                        
+                        # Check for ready pattern
+                        if pattern.search(decoded):
+                            ready = True
+                            self._processes[pid]["ready"] = True
+                            break
+                except asyncio.TimeoutError:
+                    continue
+            
+            if ready:
+                elapsed = time.time() - start_time
+                return (
+                    f"Dev server started on port {port} (ID: {pid})\n"
+                    f"Ready in {elapsed:.1f}s\n"
+                    f"Command: {command}"
+                )
+            else:
+                output = "\n".join(self._output_buffers.get(pid, [])[-10:])
+                return (
+                    f"Dev server started on port {port} (ID: {pid})\n"
+                    f"WARNING: Ready pattern not detected after {timeout}s\n"
+                    f"Server may still be starting. Recent output:\n{output}"
+                )
+                
+        except Exception as e:
+            return f"Error starting dev server: {str(e)}"
+    
+    def _get_output(self, pid: str, lines: int = 20) -> str:
+        """Get recent output from a process."""
+        if not pid:
+            return "Error: ID required for get_output action"
+        
+        if pid not in self._processes:
+            return f"Error: Process {pid} not found"
+        
+        output = self._output_buffers.get(pid, [])
+        if not output:
+            return f"No output captured for process {pid}"
+        
+        recent = output[-lines:]
+        return f"Recent output from {pid}:\n" + "\n".join(recent)
+    
+    def get_dev_servers(self) -> list[dict[str, Any]]:
+        """Get list of running dev servers."""
+        servers = []
+        for pid, info in self._processes.items():
+            if info.get("is_dev_server"):
+                proc = info["process"]
+                servers.append({
+                    "id": pid,
+                    "port": info.get("port"),
+                    "command": info["command"],
+                    "running": proc.returncode is None,
+                    "ready": info.get("ready", False),
+                })
+        return servers
+    
     async def cleanup(self) -> None:
         """Clean up all managed processes."""
         for pid in list(self._processes.keys()):
@@ -260,3 +433,4 @@ Examples:
             except Exception:
                 pass
         self._processes.clear()
+        self._output_buffers.clear()

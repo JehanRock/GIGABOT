@@ -193,12 +193,13 @@ def gateway(
         default_model=config.agents.defaults.model
     )
     
-    # Create agent
+    # Create agent with tiered routing and swarm support
     agent = AgentLoop(
         bus=bus,
         provider=provider,
         workspace=config.workspace_path,
         model=config.agents.defaults.model,
+        config=config,  # Pass config for tiered routing and swarm
         max_iterations=config.agents.defaults.max_tool_iterations,
         brave_api_key=config.tools.web.search.api_key or None
     )
@@ -305,6 +306,7 @@ def agent(
         bus=bus,
         provider=provider,
         workspace=config.workspace_path,
+        config=config,  # Pass config for tiered routing and swarm
         brave_api_key=config.tools.web.search.api_key or None
     )
     
@@ -927,6 +929,454 @@ def approvals_show(
         console.print(f"\n[bold]Decision:[/bold]")
         console.print(f"  By: {approval.decided_by}")
         console.print(f"  Reason: {approval.decision_reason}")
+
+
+# ============================================================================
+# Swarm Commands
+# ============================================================================
+
+swarm_app = typer.Typer(help="Multi-agent swarm execution")
+app.add_typer(swarm_app, name="swarm")
+
+
+@swarm_app.command("run")
+def swarm_run(
+    objective: str = typer.Argument(..., help="The objective to accomplish"),
+    pattern: str = typer.Option("research", "--pattern", "-p", 
+                                help="Swarm pattern: research, code, review, brainstorm"),
+    workers: int = typer.Option(5, "--workers", "-w", help="Maximum number of workers"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
+):
+    """Execute a multi-agent swarm task."""
+    from nanobot.config.loader import load_config
+    from nanobot.providers.litellm_provider import LiteLLMProvider
+    from nanobot.swarm.orchestrator import SwarmOrchestrator, SwarmConfig
+    
+    config = load_config()
+    
+    api_key = config.get_api_key()
+    api_base = config.get_api_base()
+    
+    if not api_key:
+        console.print("[red]Error: No API key configured.[/red]")
+        raise typer.Exit(1)
+    
+    provider = LiteLLMProvider(
+        api_key=api_key,
+        api_base=api_base,
+        default_model=config.agents.defaults.model
+    )
+    
+    swarm_config = SwarmConfig(
+        enabled=True,
+        max_workers=workers,
+        worker_model=config.agents.swarm.worker_model,
+        orchestrator_model=config.agents.swarm.orchestrator_model,
+    )
+    
+    orchestrator = SwarmOrchestrator(
+        config=swarm_config,
+        provider=provider,
+        workspace=config.workspace_path,
+    )
+    
+    console.print(f"{__logo__} Executing swarm with pattern: [cyan]{pattern}[/cyan]")
+    console.print(f"  Objective: {objective[:80]}{'...' if len(objective) > 80 else ''}")
+    console.print(f"  Workers: {workers}")
+    console.print("")
+    
+    async def run_swarm():
+        return await orchestrator.execute(
+            objective=objective,
+            pattern=pattern,
+        )
+    
+    result = asyncio.run(run_swarm())
+    
+    console.print("\n[bold]Result:[/bold]")
+    console.print(result)
+
+
+@swarm_app.command("patterns")
+def swarm_patterns():
+    """List available swarm patterns with descriptions."""
+    from nanobot.swarm.patterns import PATTERNS
+    
+    console.print(f"\n{__logo__} [bold]Available Swarm Patterns[/bold]\n")
+    
+    for name, pattern in PATTERNS.items():
+        console.print(f"[cyan]{name}[/cyan]")
+        console.print(f"  {pattern.description}")
+        
+        # Show task flow
+        tasks = pattern.generate_tasks("example", "")
+        if tasks:
+            console.print("  [dim]Flow:[/dim]", end="")
+            task_names = [t.id for t in tasks]
+            console.print(f" [dim]{' → '.join(task_names)}[/dim]")
+        console.print("")
+
+
+@swarm_app.command("test")
+def swarm_test(
+    message: str = typer.Argument(..., help="Message to test swarm trigger"),
+):
+    """Test if a message would trigger swarm execution."""
+    from nanobot.routing.classifier import TaskClassifier
+    from nanobot.agent.swarm_trigger import should_use_swarm, get_complexity_score, auto_select_pattern
+    from nanobot.config.loader import load_config
+    
+    config = load_config()
+    
+    # Classify the message
+    classifier = TaskClassifier()
+    classification = classifier.classify(message)
+    
+    # Get complexity analysis
+    score, factors = get_complexity_score(message, classification)
+    
+    # Check if swarm would trigger
+    would_swarm, pattern = should_use_swarm(message, classification, config.agents.swarm)
+    
+    console.print(f"\n{__logo__} [bold]Swarm Trigger Analysis[/bold]\n")
+    console.print(f"Message: {message[:100]}{'...' if len(message) > 100 else ''}")
+    console.print(f"\n[bold]Classification:[/bold]")
+    console.print(f"  Task Type: {classification.task_type.value}")
+    console.print(f"  Tier: {classification.tier}")
+    console.print(f"  Confidence: {classification.confidence:.0%}")
+    
+    console.print(f"\n[bold]Complexity Score:[/bold] {score}")
+    if factors:
+        for factor in factors:
+            console.print(f"  + {factor}")
+    
+    threshold = getattr(config.agents.swarm, 'complexity_threshold', 3)
+    console.print(f"\n[bold]Threshold:[/bold] {threshold}")
+    
+    if would_swarm:
+        console.print(f"\n[green]✓ Would trigger swarm[/green]")
+        console.print(f"  Pattern: {pattern}")
+    else:
+        console.print(f"\n[yellow]✗ Would NOT trigger swarm[/yellow]")
+        console.print(f"  (Score {score} < threshold {threshold})")
+
+
+# ============================================================================
+# Routing Commands
+# ============================================================================
+
+routing_app = typer.Typer(help="Tiered model routing")
+app.add_typer(routing_app, name="routing")
+
+
+@routing_app.command("status")
+def routing_status():
+    """Show routing configuration and tier status."""
+    from nanobot.config.loader import load_config
+    
+    config = load_config()
+    routing = config.agents.tiered_routing
+    
+    console.print(f"\n{__logo__} [bold]Tiered Routing Status[/bold]\n")
+    
+    status = "[green]enabled[/green]" if routing.enabled else "[dim]disabled[/dim]"
+    console.print(f"Status: {status}")
+    console.print(f"Fallback Tier: {routing.fallback_tier}")
+    
+    if routing.classifier_model:
+        console.print(f"Classifier Model: {routing.classifier_model}")
+    
+    console.print("\n[bold]Tiers:[/bold]")
+    for tier_name, tier_config in routing.tiers.items():
+        console.print(f"\n  [cyan]{tier_name}[/cyan]")
+        console.print(f"    Models: {', '.join(tier_config.models)}")
+        console.print(f"    Triggers: {', '.join(tier_config.triggers)}")
+
+
+@routing_app.command("test")
+def routing_test(
+    message: str = typer.Argument(..., help="Message to test routing"),
+):
+    """Test which tier/model would be selected for a message."""
+    from nanobot.routing.classifier import TaskClassifier, classify_by_keywords, classify_by_heuristics
+    from nanobot.routing.router import create_default_router
+    from nanobot.config.loader import load_config
+    
+    config = load_config()
+    
+    # Create classifier and router
+    classifier = TaskClassifier()
+    classification = classifier.classify(message)
+    
+    # Use config router if enabled, otherwise default
+    if config.agents.tiered_routing.enabled:
+        from nanobot.routing.router import create_router_from_config
+        router = create_router_from_config(config)
+    else:
+        router = create_default_router()
+    
+    decision = router.route(message)
+    
+    console.print(f"\n{__logo__} [bold]Routing Analysis[/bold]\n")
+    console.print(f"Message: {message[:100]}{'...' if len(message) > 100 else ''}")
+    
+    console.print(f"\n[bold]Classification:[/bold]")
+    console.print(f"  Task Type: {decision.classification.task_type.value}")
+    console.print(f"  Confidence: {decision.classification.confidence:.0%}")
+    console.print(f"  Keywords: {', '.join(decision.classification.keywords_matched[:3]) if decision.classification.keywords_matched else 'none'}")
+    console.print(f"  Reasoning: {decision.classification.reasoning}")
+    
+    console.print(f"\n[bold]Routing Decision:[/bold]")
+    console.print(f"  Tier: [cyan]{decision.tier}[/cyan]")
+    console.print(f"  Model: [green]{decision.model}[/green]")
+    
+    if decision.fallback_used:
+        console.print(f"  [yellow]Fallback: {decision.fallback_reason}[/yellow]")
+
+
+# ============================================================================
+# Team Commands (Persona-Based Hierarchy)
+# ============================================================================
+
+team_app = typer.Typer(help="Agent team management (persona-based hierarchy)")
+app.add_typer(team_app, name="team")
+
+
+@team_app.command("status")
+def team_status():
+    """Show team composition and status."""
+    from nanobot.config.loader import load_config
+    from nanobot.providers.litellm_provider import LiteLLMProvider
+    from nanobot.swarm.team import AgentTeam
+    
+    config = load_config()
+    
+    console.print(f"\n{__logo__} [bold]Agent Team Status[/bold]\n")
+    
+    team_config = config.agents.team
+    status = "[green]enabled[/green]" if team_config.enabled else "[dim]disabled[/dim]"
+    console.print(f"Team Status: {status}")
+    console.print(f"QA Gate: {'enabled' if team_config.qa_gate_enabled else 'disabled'}")
+    console.print(f"Audit Gate: {'enabled' if team_config.audit_gate_enabled else 'disabled'}")
+    console.print(f"Audit Threshold: {team_config.audit_threshold}")
+    
+    console.print("\n[bold]Team Roles:[/bold]")
+    for role_id, role_config in team_config.roles.items():
+        status_icon = "[green]●[/green]" if role_config.enabled else "[dim]○[/dim]"
+        model = role_config.model or "(default)"
+        console.print(f"  {status_icon} [cyan]{role_id}[/cyan]: {model}")
+
+
+@team_app.command("roles")
+def team_roles():
+    """List all available roles with details."""
+    from nanobot.swarm.roles import DEFAULT_ROLES, get_hierarchy
+    
+    console.print(f"\n{__logo__} [bold]Available Team Roles[/bold]\n")
+    
+    hierarchy = get_hierarchy()
+    
+    for role_id, role in DEFAULT_ROLES.items():
+        console.print(f"[cyan]{role.title}[/cyan] ({role_id})")
+        console.print(f"  Model: {role.model}")
+        console.print(f"  Authority: {'★' * role.authority_level}{'☆' * (5 - role.authority_level)}")
+        if role.reports_to:
+            console.print(f"  Reports to: {role.reports_to}")
+        console.print(f"  Capabilities:")
+        for cap in role.capabilities[:3]:
+            console.print(f"    - {cap}")
+        
+        # Show direct reports
+        if role_id in hierarchy:
+            console.print(f"  Direct reports: {', '.join(hierarchy[role_id])}")
+        console.print("")
+
+
+@team_app.command("assign")
+def team_assign(
+    task: str = typer.Argument(..., help="Task to assign"),
+):
+    """Test which role would be assigned a task."""
+    from nanobot.config.loader import load_config
+    from nanobot.providers.litellm_provider import LiteLLMProvider
+    from nanobot.swarm.team import AgentTeam
+    
+    config = load_config()
+    
+    api_key = config.get_api_key()
+    api_base = config.get_api_base()
+    
+    if not api_key:
+        console.print("[red]Error: No API key configured.[/red]")
+        raise typer.Exit(1)
+    
+    provider = LiteLLMProvider(
+        api_key=api_key,
+        api_base=api_base,
+        default_model=config.agents.defaults.model
+    )
+    
+    team = AgentTeam(
+        provider=provider,
+        workspace=config.workspace_path,
+        config=config.agents.team,
+    )
+    
+    async def run_assign():
+        return await team.assign_task(task)
+    
+    assignment = asyncio.run(run_assign())
+    
+    console.print(f"\n{__logo__} [bold]Task Assignment[/bold]\n")
+    console.print(f"Task: {task[:80]}{'...' if len(task) > 80 else ''}")
+    console.print(f"\n[bold]Assignment:[/bold]")
+    console.print(f"  Role: [cyan]{assignment.role_id}[/cyan]")
+    console.print(f"  Reason: {assignment.reason}")
+
+
+@team_app.command("deliberate")
+def team_deliberate(
+    question: str = typer.Argument(..., help="Question to deliberate on"),
+    context: str = typer.Option("", "--context", "-c", help="Additional context"),
+):
+    """Run a team deliberation session."""
+    from nanobot.config.loader import load_config
+    from nanobot.providers.litellm_provider import LiteLLMProvider
+    from nanobot.swarm.orchestrator import TeamOrchestrator
+    
+    config = load_config()
+    
+    api_key = config.get_api_key()
+    api_base = config.get_api_base()
+    
+    if not api_key:
+        console.print("[red]Error: No API key configured.[/red]")
+        raise typer.Exit(1)
+    
+    provider = LiteLLMProvider(
+        api_key=api_key,
+        api_base=api_base,
+        default_model=config.agents.defaults.model
+    )
+    
+    orchestrator = TeamOrchestrator(
+        provider=provider,
+        workspace=config.workspace_path,
+        config=config.agents.team,
+    )
+    
+    console.print(f"\n{__logo__} Consulting team on: [cyan]{question[:60]}...[/cyan]\n")
+    
+    async def run_deliberate():
+        return await orchestrator.execute(question, mode="deliberate", context=context)
+    
+    result = asyncio.run(run_deliberate())
+    console.print(result)
+
+
+# ============================================================================
+# Reach and Done Commands (Team Interaction Modes)
+# ============================================================================
+
+@app.command("reach")
+def reach_goal(
+    goal: str = typer.Argument(..., help="Goal to discuss with the team"),
+    context: str = typer.Option("", "--context", "-c", help="Additional context"),
+):
+    """
+    Discuss a goal with the team (deliberation mode).
+    
+    The team will provide opinions and present options for your consideration.
+    Use this for strategic decisions where you want input before proceeding.
+    """
+    from nanobot.config.loader import load_config
+    from nanobot.providers.litellm_provider import LiteLLMProvider
+    from nanobot.swarm.orchestrator import TeamOrchestrator
+    
+    config = load_config()
+    
+    if not config.agents.team.enabled:
+        console.print("[yellow]Warning: Team not enabled in config. Enabling temporarily.[/yellow]")
+    
+    api_key = config.get_api_key()
+    api_base = config.get_api_base()
+    
+    if not api_key:
+        console.print("[red]Error: No API key configured.[/red]")
+        raise typer.Exit(1)
+    
+    provider = LiteLLMProvider(
+        api_key=api_key,
+        api_base=api_base,
+        default_model=config.agents.defaults.model
+    )
+    
+    orchestrator = TeamOrchestrator(
+        provider=provider,
+        workspace=config.workspace_path,
+        config=config.agents.team,
+    )
+    
+    console.print(f"\n{__logo__} [bold]Reaching Goal[/bold]\n")
+    console.print(f"Goal: {goal}")
+    console.print("\nConsulting team members...\n")
+    
+    async def run_reach():
+        return await orchestrator.execute(goal, mode="deliberate", context=context)
+    
+    result = asyncio.run(run_reach())
+    console.print(result)
+
+
+@app.command("done")
+def get_done(
+    task: str = typer.Argument(..., help="Task to complete"),
+    context: str = typer.Option("", "--context", "-c", help="Additional context"),
+    pattern: str = typer.Option(None, "--pattern", "-p", help="Workflow pattern to use"),
+):
+    """
+    Delegate a task to the team (execution mode).
+    
+    The team will assign, execute, and review the task automatically.
+    Use this when you want something completed without detailed planning.
+    """
+    from nanobot.config.loader import load_config
+    from nanobot.providers.litellm_provider import LiteLLMProvider
+    from nanobot.swarm.orchestrator import TeamOrchestrator
+    
+    config = load_config()
+    
+    if not config.agents.team.enabled:
+        console.print("[yellow]Warning: Team not enabled in config. Enabling temporarily.[/yellow]")
+    
+    api_key = config.get_api_key()
+    api_base = config.get_api_base()
+    
+    if not api_key:
+        console.print("[red]Error: No API key configured.[/red]")
+        raise typer.Exit(1)
+    
+    provider = LiteLLMProvider(
+        api_key=api_key,
+        api_base=api_base,
+        default_model=config.agents.defaults.model
+    )
+    
+    orchestrator = TeamOrchestrator(
+        provider=provider,
+        workspace=config.workspace_path,
+        config=config.agents.team,
+    )
+    
+    console.print(f"\n{__logo__} [bold]Getting It Done[/bold]\n")
+    console.print(f"Task: {task}")
+    console.print("\nAssigning to team...\n")
+    
+    async def run_done():
+        return await orchestrator.execute(task, mode="execute", context=context, pattern=pattern)
+    
+    result = asyncio.run(run_done())
+    console.print(result)
 
 
 # ============================================================================

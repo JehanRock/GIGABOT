@@ -59,12 +59,12 @@ gigabot ui            # WebUI only
 │  ├─ Matrix         │  ├─ Compaction     │  └─ Daemon            │
 │  └─ Slack          │  └─ Subagents      │                       │
 ├─────────────────────────────────────────────────────────────────┤
-│  Routing           │  Swarm             │  Security             │
+│  Routing           │  Swarm & Team      │  Security             │
 │  ├─ Classifier     │  ├─ Orchestrator   │  ├─ Auth              │
-│  └─ Router         │  ├─ Workers        │  ├─ Policy            │
-│                    │  └─ Patterns       │  ├─ Sandbox           │
-│                    │                    │  ├─ Approval          │
-│                    │                    │  └─ Audit             │
+│  └─ Router         │  ├─ Team Agents    │  ├─ Policy            │
+│                    │  ├─ Deliberation   │  ├─ Sandbox           │
+│                    │  ├─ Quality Gate   │  ├─ Approval          │
+│                    │  └─ Patterns       │  └─ Audit             │
 ├─────────────────────────────────────────────────────────────────┤
 │  Providers (LiteLLM)                                            │
 │  OpenRouter │ Anthropic │ OpenAI │ Moonshot │ DeepSeek │ Ollama │
@@ -130,6 +130,77 @@ result = await orchestrator.execute(
 )
 ```
 
+### Agent Team (Persona-Based Hierarchy)
+
+GigaBot features a company-style agent hierarchy where you are the CEO and the main agent acts as your Managing Director, delegating to specialized team members:
+
+```
+You (CEO)
+    └── Main Agent (Managing Director)
+            ├── Architect (Claude Opus) - System design
+            ├── Lead Dev (Claude Sonnet) - Complex implementation
+            ├── Senior Dev (Kimi K2.5) - Feature development
+            ├── Junior Dev (Gemini Flash) - Simple tasks
+            ├── QA Engineer (Claude Sonnet) - Quality review
+            ├── Auditor (Claude Opus) - Security review
+            └── Researcher (Gemini Flash) - Information gathering
+```
+
+**Two Interaction Modes:**
+
+1. **"Reach this goal"** (Deliberation Mode):
+   - Team members discuss and provide opinions
+   - Synthesized into options with pros/cons
+   - Presented to you for decision
+
+2. **"Get this done"** (Execution Mode):
+   - Automatic role assignment
+   - Parallel task execution
+   - Mandatory QA review
+   - Security audit for sensitive tasks
+
+```python
+from gigabot.swarm import TeamOrchestrator
+
+orchestrator = TeamOrchestrator(provider, workspace, config)
+
+# Deliberation mode - discuss and present options
+result = await orchestrator.execute(
+    "How should we improve authentication?",
+    mode="deliberate"
+)
+
+# Execution mode - delegate and complete
+result = await orchestrator.execute(
+    "Add dark mode to the dashboard",
+    mode="execute"
+)
+```
+
+### Quality Gates
+
+All team output passes through mandatory review:
+
+1. **QA Review** (mandatory):
+   - Correctness and logic
+   - Completeness of implementation
+   - Error handling
+   - Edge cases
+
+2. **Security Audit** (conditional):
+   - Vulnerability assessment
+   - Input validation
+   - Authentication/authorization
+   - Data exposure risks
+
+```yaml
+agents:
+  team:
+    qa_gate_enabled: true
+    audit_gate_enabled: true
+    audit_threshold: sensitive  # all, sensitive, none
+```
+
 ### Context Management
 
 Automatic context window guard:
@@ -159,6 +230,23 @@ gigabot onboard         # Interactive setup
 gigabot config show     # Show config
 gigabot status          # System status
 
+# Team Commands (Persona-Based Hierarchy)
+gigabot reach <goal>     # Deliberation mode - discuss & present options
+gigabot done <task>      # Execution mode - delegate & complete
+gigabot team status      # Show team composition
+gigabot team roles       # List all roles with details
+gigabot team assign <task>  # Test task assignment logic
+gigabot team deliberate <question>  # Run deliberation session
+
+# Swarm Commands
+gigabot swarm run <objective>  # Execute swarm task
+gigabot swarm patterns         # List available patterns
+gigabot swarm test <message>   # Test swarm trigger
+
+# Routing Commands
+gigabot routing status   # Show routing tiers
+gigabot routing test <message>  # Test routing decision
+
 # Security
 gigabot security audit  # Run security checks
 
@@ -175,6 +263,16 @@ gigabot daemon logs      # View logs
 # Cron
 gigabot cron list        # List jobs
 gigabot cron run <id>    # Trigger manually
+```
+
+### In-Chat Commands
+
+When using chat channels (Telegram, Discord, etc.) or the CLI chat:
+
+```
+/reach <question>   # Team deliberation mode
+/done <task>        # Team execution mode
+/team               # Show team status
 ```
 
 ---
@@ -199,6 +297,39 @@ agents:
         models: [anthropic/claude-sonnet-4-5]
       specialist:
         models: [anthropic/claude-opus-4-5]
+  
+  # Agent Team (Persona-Based Hierarchy)
+  team:
+    enabled: true
+    roles:
+      architect:
+        model: anthropic/claude-opus-4-5
+      lead_dev:
+        model: anthropic/claude-sonnet-4-5
+      senior_dev:
+        model: moonshot/kimi-k2.5
+      junior_dev:
+        model: google/gemini-2.0-flash
+      qa_engineer:
+        model: anthropic/claude-sonnet-4-5
+      auditor:
+        model: anthropic/claude-opus-4-5
+      researcher:
+        model: google/gemini-2.0-flash
+    qa_gate_enabled: true
+    audit_gate_enabled: true
+    audit_threshold: sensitive  # all, sensitive, none
+    deliberation_timeout: 120
+    min_opinions: 3
+  
+  # Multi-Agent Swarm
+  swarm:
+    enabled: true
+    max_workers: 5
+    worker_model: moonshot/kimi-k2.5
+    orchestrator_model: anthropic/claude-sonnet-4-5
+    auto_trigger: true
+    complexity_threshold: 3
 
 channels:
   telegram:

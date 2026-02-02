@@ -113,11 +113,67 @@ class SwarmConfig(BaseModel):
     max_workers: int = 5
     worker_model: str = "moonshot/kimi-k2.5"
     orchestrator_model: str = "anthropic/claude-sonnet-4-5"
+    auto_trigger: bool = True  # Auto-detect when to use swarm
+    complexity_threshold: int = 3  # Score threshold for auto-swarm
     patterns: dict[str, list[str]] = Field(default_factory=lambda: {
         "research": ["search", "summarize", "report"],
         "code": ["implement", "test", "refactor"],
         "review": ["analyze", "critique", "suggest"],
+        "brainstorm": ["generate", "evaluate", "develop"],
     })
+
+
+class VisualValidationConfig(BaseModel):
+    """Visual validation configuration for Kimi-style screenshot analysis."""
+    enabled: bool = False
+    vision_model: str = "anthropic/claude-sonnet-4-5"
+    auto_screenshot: bool = True
+    max_fix_iterations: int = 5
+    screenshot_delay_ms: int = 2000  # Wait before taking screenshot
+
+
+class DevWorkflowConfig(BaseModel):
+    """Agentic development workflow configuration."""
+    enabled: bool = False
+    default_port: int = 3000
+    dev_command: str = "npm run dev"
+    ready_pattern: str = "ready|listening|started|compiled|Local:"
+    server_timeout: int = 30  # Seconds to wait for dev server ready
+    visual_validation: VisualValidationConfig = Field(default_factory=VisualValidationConfig)
+
+
+class AgentRoleConfig(BaseModel):
+    """Configuration for a single agent role in the team."""
+    enabled: bool = True
+    model: str = ""  # Empty means use default for role
+    temperature: float = 0.7
+    max_tokens: int = 4096
+    custom_persona: str = ""  # Override default persona
+
+
+class TeamConfig(BaseModel):
+    """Agent team configuration for persona-based hierarchy."""
+    enabled: bool = False
+    
+    # Role configurations (override defaults)
+    roles: dict[str, AgentRoleConfig] = Field(default_factory=lambda: {
+        "architect": AgentRoleConfig(model="anthropic/claude-opus-4-5"),
+        "lead_dev": AgentRoleConfig(model="anthropic/claude-sonnet-4-5"),
+        "senior_dev": AgentRoleConfig(model="moonshot/kimi-k2.5"),
+        "junior_dev": AgentRoleConfig(model="google/gemini-2.0-flash"),
+        "qa_engineer": AgentRoleConfig(model="anthropic/claude-sonnet-4-5"),
+        "auditor": AgentRoleConfig(model="anthropic/claude-opus-4-5"),
+        "researcher": AgentRoleConfig(model="google/gemini-2.0-flash"),
+    })
+    
+    # Quality gates
+    qa_gate_enabled: bool = True
+    audit_gate_enabled: bool = True
+    audit_threshold: str = "sensitive"  # "all", "sensitive", "none"
+    
+    # Deliberation settings
+    deliberation_timeout: int = 120  # Seconds to wait for opinions
+    min_opinions: int = 3  # Minimum opinions to gather
 
 
 class AgentsConfig(BaseModel):
@@ -125,6 +181,8 @@ class AgentsConfig(BaseModel):
     defaults: AgentDefaults = Field(default_factory=AgentDefaults)
     tiered_routing: TieredRoutingConfig = Field(default_factory=TieredRoutingConfig)
     swarm: SwarmConfig = Field(default_factory=SwarmConfig)
+    team: TeamConfig = Field(default_factory=TeamConfig)
+    dev_workflow: DevWorkflowConfig = Field(default_factory=DevWorkflowConfig)
 
 
 class ProviderConfig(BaseModel):

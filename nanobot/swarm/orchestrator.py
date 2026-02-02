@@ -384,3 +384,448 @@ If some tasks failed, work with what succeeded and note any gaps."""
         self._results.clear()
         self._running_tasks.clear()
         self._worker_pool.reset_all_stats()
+
+
+# =============================================================================
+# Team Orchestrator - Persona-Based Hierarchy
+# =============================================================================
+
+class TeamOrchestrator:
+    """
+    Orchestrates the agent team like a Managing Director.
+    
+    Key differences from SwarmOrchestrator:
+    - Role-based assignment instead of generic workers
+    - Mandatory QA gate on all outputs
+    - Optional Auditor review for sensitive tasks
+    - Deliberation mode for complex decisions
+    
+    Supports two modes:
+    - "execute" (default): Assign and complete tasks ("Get this done")
+    - "deliberate": Gather opinions, present options ("Reach this goal")
+    """
+    
+    def __init__(
+        self,
+        provider: Any,  # LLMProvider
+        workspace: Path,
+        config: Any = None,  # TeamConfig
+    ):
+        """
+        Initialize the team orchestrator.
+        
+        Args:
+            provider: LLM provider for API calls.
+            workspace: Workspace path.
+            config: Optional TeamConfig for customization.
+        """
+        from nanobot.swarm.team import AgentTeam
+        from nanobot.swarm.quality_gate import QualityGate, MultiStageGate
+        from nanobot.swarm.deliberation import DeliberationSession
+        
+        self.provider = provider
+        self.workspace = workspace
+        self.config = config
+        
+        # Initialize the team
+        self.team = AgentTeam(
+            provider=provider,
+            workspace=workspace,
+            config=config,
+        )
+        
+        # Initialize quality gate
+        qa_enabled = config.qa_gate_enabled if config else True
+        audit_enabled = config.audit_gate_enabled if config else True
+        audit_threshold = config.audit_threshold if config else "sensitive"
+        
+        self.quality_gate = MultiStageGate(
+            team=self.team,
+            qa_enabled=qa_enabled,
+            audit_enabled=audit_enabled,
+            audit_threshold=audit_threshold,
+        )
+        
+        # Deliberation settings
+        self.deliberation_timeout = config.deliberation_timeout if config else 120
+        self.min_opinions = config.min_opinions if config else 3
+        
+        # State tracking
+        self._results: dict[str, TaskResult] = {}
+        self._running_tasks: set[str] = set()
+    
+    async def execute(
+        self,
+        objective: str,
+        mode: str = "execute",
+        context: str = "",
+        pattern: str | None = None,
+    ) -> str:
+        """
+        Execute with the team.
+        
+        Args:
+            objective: The objective to accomplish.
+            mode: "execute" for tasks, "deliberate" for discussions.
+            context: Additional context.
+            pattern: Optional workflow pattern.
+        
+        Returns:
+            Result string.
+        """
+        if mode == "deliberate":
+            return await self._deliberate(objective, context)
+        else:
+            return await self._execute(objective, context, pattern)
+    
+    async def _deliberate(
+        self,
+        question: str,
+        context: str = "",
+    ) -> str:
+        """
+        Run deliberation mode - gather team opinions and present options.
+        
+        Args:
+            question: The question to deliberate on.
+            context: Additional context.
+        
+        Returns:
+            Formatted deliberation result.
+        """
+        from nanobot.swarm.deliberation import DeliberationSession
+        
+        logger.info(f"Team deliberating: {question[:50]}...")
+        
+        session = DeliberationSession(
+            team=self.team,
+            provider=self.provider,
+            timeout=self.deliberation_timeout,
+            min_opinions=self.min_opinions,
+        )
+        
+        result = await session.run(question, context=context)
+        return result.format_for_user()
+    
+    async def _execute(
+        self,
+        objective: str,
+        context: str = "",
+        pattern: str | None = None,
+    ) -> str:
+        """
+        Execute mode - delegate tasks and complete work.
+        
+        Args:
+            objective: The objective to accomplish.
+            context: Additional context.
+            pattern: Optional workflow pattern.
+        
+        Returns:
+            Result with QA review.
+        """
+        from nanobot.swarm.quality_gate import WorkOutput
+        
+        logger.info(f"Team executing: {objective[:50]}...")
+        
+        # Decompose into tasks
+        tasks = await self._decompose_task(objective, context, pattern)
+        
+        if not tasks:
+            return "Failed to decompose task into subtasks"
+        
+        logger.info(f"Decomposed into {len(tasks)} tasks")
+        
+        # Execute tasks with role-based assignment
+        results = await self._execute_tasks(tasks)
+        
+        # Aggregate results
+        aggregated = await self._aggregate_results(objective, results)
+        
+        # Run through quality gate
+        work_output = WorkOutput(
+            agent_id="team",
+            agent_title="Team",
+            task=objective,
+            content=aggregated,
+            context=context,
+        )
+        
+        gate_result = await self.quality_gate.review(work_output)
+        
+        # Format final output
+        output_lines = [aggregated]
+        
+        if gate_result.qa_result or gate_result.audit_result:
+            output_lines.append("\n---")
+            output_lines.append(gate_result.get_summary())
+        
+        return "\n".join(output_lines)
+    
+    async def _decompose_task(
+        self,
+        objective: str,
+        context: str,
+        pattern: str | None,
+    ) -> list[SwarmTask]:
+        """Decompose objective into tasks with role assignments."""
+        
+        # Use pattern if specified
+        if pattern:
+            swarm_pattern = get_pattern(pattern)
+            if swarm_pattern:
+                logger.info(f"Using '{pattern}' pattern")
+                tasks = swarm_pattern.generate_tasks(objective, context)
+                # Add role assignments
+                for task in tasks:
+                    task.metadata["assigned_role"] = self._assign_role_for_task(task)
+                return tasks
+        
+        # LLM-based decomposition with role assignment
+        prompt = f"""You are a Managing Director decomposing a task for your team.
+
+Objective: {objective}
+
+Context: {context or "None provided"}
+
+Available team roles:
+- architect: System design, technical decisions
+- lead_dev: Complex implementation, code review
+- senior_dev: Feature implementation
+- junior_dev: Simple tasks, bug fixes
+- qa_engineer: Testing, quality review
+- auditor: Security review
+- researcher: Information gathering
+
+Decompose into 2-5 tasks and assign each to the most appropriate role.
+
+Return a JSON array:
+[
+  {{
+    "id": "task_1",
+    "description": "Brief task description",
+    "instructions": "Detailed instructions",
+    "assigned_role": "role_id",
+    "dependencies": []
+  }}
+]
+
+Focus on:
+1. Assigning to the right expertise level
+2. Clear instructions for each role
+3. Logical task ordering
+
+Return ONLY the JSON array."""
+
+        try:
+            response = await self.provider.chat(
+                messages=[{"role": "user", "content": prompt}],
+                model="anthropic/claude-sonnet-4-5",
+                max_tokens=2000,
+            )
+            
+            content = response.content or ""
+            json_match = re.search(r'\[[\s\S]*\]', content)
+            
+            if json_match:
+                tasks_data = json.loads(json_match.group())
+                
+                tasks = []
+                for t in tasks_data:
+                    task = SwarmTask(
+                        id=t.get("id", f"task_{len(tasks)}"),
+                        description=t.get("description", ""),
+                        instructions=t.get("instructions", ""),
+                        dependencies=t.get("dependencies", []),
+                        metadata={"assigned_role": t.get("assigned_role", "senior_dev")},
+                    )
+                    tasks.append(task)
+                
+                return tasks
+                
+        except Exception as e:
+            logger.error(f"Task decomposition failed: {e}")
+        
+        return []
+    
+    def _assign_role_for_task(self, task: SwarmTask) -> str:
+        """Determine the best role for a task."""
+        desc = task.description.lower()
+        
+        if any(kw in desc for kw in ["design", "architect", "system"]):
+            return "architect"
+        if any(kw in desc for kw in ["review", "test", "quality"]):
+            return "qa_engineer"
+        if any(kw in desc for kw in ["research", "search", "find"]):
+            return "researcher"
+        if any(kw in desc for kw in ["implement", "code", "write"]):
+            return "senior_dev"
+        
+        return "senior_dev"
+    
+    async def _execute_tasks(self, tasks: list[SwarmTask]) -> list[TaskResult]:
+        """Execute tasks using role-based agents."""
+        results = []
+        completed = set()
+        pending = {t.id: t for t in tasks}
+        
+        while pending:
+            # Find tasks with satisfied dependencies
+            ready = [
+                t for t in pending.values()
+                if all(dep in completed for dep in t.dependencies)
+            ]
+            
+            if not ready:
+                logger.warning("No tasks ready to execute")
+                break
+            
+            # Execute ready tasks in parallel
+            batch_results = await asyncio.gather(
+                *[self._execute_single_task(t) for t in ready],
+                return_exceptions=True
+            )
+            
+            for task, result in zip(ready, batch_results):
+                if isinstance(result, Exception):
+                    result = TaskResult(
+                        task_id=task.id,
+                        success=False,
+                        result="",
+                        error=str(result),
+                    )
+                
+                results.append(result)
+                completed.add(task.id)
+                del pending[task.id]
+                self._results[task.id] = result
+        
+        return results
+    
+    async def _execute_single_task(self, task: SwarmTask) -> TaskResult:
+        """Execute a task using the assigned role's agent."""
+        start_time = time.time()
+        
+        # Get assigned role
+        role_id = task.metadata.get("assigned_role", "senior_dev")
+        agent = self.team.get_agent(role_id)
+        
+        if not agent:
+            # Fallback to senior_dev
+            agent = self.team.get_agent("senior_dev")
+        
+        if not agent:
+            return TaskResult(
+                task_id=task.id,
+                success=False,
+                result="",
+                error="No agent available",
+                execution_time=time.time() - start_time,
+            )
+        
+        # Build context from dependencies
+        dep_context = ""
+        for dep_id in task.dependencies:
+            if dep_id in self._results:
+                dep_result = self._results[dep_id]
+                dep_context += f"\nResult from {dep_id}: {dep_result.result[:500]}"
+        
+        # Execute
+        task_prompt = f"""Task: {task.description}
+
+Instructions:
+{task.instructions}
+
+{f"Context from previous tasks:{dep_context}" if dep_context else ""}
+
+Provide a clear, complete result."""
+
+        self._running_tasks.add(task.id)
+        
+        try:
+            response = await agent.execute(task_prompt, dep_context)
+            
+            return TaskResult(
+                task_id=task.id,
+                success=response.success,
+                result=response.content,
+                error=response.error,
+                execution_time=time.time() - start_time,
+                worker_id=agent.id,
+            )
+            
+        except Exception as e:
+            return TaskResult(
+                task_id=task.id,
+                success=False,
+                result="",
+                error=str(e),
+                execution_time=time.time() - start_time,
+            )
+        finally:
+            self._running_tasks.discard(task.id)
+    
+    async def _aggregate_results(
+        self,
+        objective: str,
+        results: list[TaskResult],
+    ) -> str:
+        """Aggregate results using a senior agent."""
+        results_summary = []
+        for r in results:
+            status = "✓" if r.success else "✗"
+            results_summary.append(
+                f"{status} [{r.worker_id}] {r.task_id}: "
+                f"{r.result[:300] if r.success else r.error}"
+            )
+        
+        prompt = f"""As the Managing Director, synthesize these team results.
+
+Objective: {objective}
+
+Team Results:
+{chr(10).join(results_summary)}
+
+Synthesize into a coherent response addressing the original objective.
+Include contributions from each team member where relevant."""
+
+        try:
+            # Use architect for synthesis
+            architect = self.team.get_architect()
+            if architect:
+                response = await architect.execute(prompt)
+                return response.content
+            
+            # Fallback
+            response = await self.provider.chat(
+                messages=[{"role": "user", "content": prompt}],
+                model="anthropic/claude-sonnet-4-5",
+                max_tokens=3000,
+            )
+            return response.content or ""
+            
+        except Exception as e:
+            logger.error(f"Result aggregation failed: {e}")
+            return "\n\n".join([
+                f"## {r.task_id} ({r.worker_id})\n{r.result}"
+                for r in results if r.success
+            ])
+    
+    def get_status(self) -> dict[str, Any]:
+        """Get team orchestrator status."""
+        return {
+            "team_size": len(self.team.get_available_roles()),
+            "available_roles": self.team.get_available_roles(),
+            "active_tasks": len(self._running_tasks),
+            "completed_tasks": len(self._results),
+            "qa_enabled": self.quality_gate.qa_enabled if self.quality_gate else False,
+            "audit_enabled": self.quality_gate.audit_enabled if self.quality_gate else False,
+            "team_stats": self.team.get_team_stats(),
+        }
+    
+    def reset(self) -> None:
+        """Reset orchestrator state."""
+        self._results.clear()
+        self._running_tasks.clear()
+        self.team.reset_all_stats()
+        self.team.clear_all_context()

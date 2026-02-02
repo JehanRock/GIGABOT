@@ -18,7 +18,10 @@ Built with a focus on **performance**, **security**, **privacy**, and **autonomy
 |---------|-------------|
 | **Multi-Channel** | Telegram, WhatsApp, Discord, Signal, Matrix, Slack |
 | **Tiered Routing** | Automatic model selection based on task complexity |
+| **Agent Team** | Company-style hierarchy with persona-based agents |
 | **Multi-Agent Swarm** | Orchestrate multiple agents for complex tasks |
+| **Quality Gates** | Mandatory QA review and security audits |
+| **Deliberation Mode** | Board-style discussions for strategic decisions |
 | **Security Layers** | Auth, policies, sandboxing, approval workflows |
 | **Self-Hosted** | Complete privacy, no telemetry, encrypted channels |
 | **WebUI Dashboard** | Real-time monitoring with WebSocket streaming |
@@ -37,12 +40,12 @@ Built with a focus on **performance**, **security**, **privacy**, and **autonomy
 │  ├─ Matrix         │  ├─ Compaction     │  └─ Daemon            │
 │  └─ Slack          │  └─ Subagents      │                       │
 ├─────────────────────────────────────────────────────────────────┤
-│  Routing           │  Swarm             │  Security             │
+│  Routing           │  Swarm & Team      │  Security             │
 │  ├─ Classifier     │  ├─ Orchestrator   │  ├─ Auth              │
-│  └─ Router         │  ├─ Workers        │  ├─ Policy            │
-│                    │  └─ Patterns       │  ├─ Sandbox           │
-│                    │                    │  ├─ Approval          │
-│                    │                    │  └─ Audit             │
+│  └─ Router         │  ├─ Team Agents    │  ├─ Policy            │
+│                    │  ├─ Deliberation   │  ├─ Sandbox           │
+│                    │  ├─ Quality Gate   │  ├─ Approval          │
+│                    │  └─ Patterns       │  └─ Audit             │
 ├─────────────────────────────────────────────────────────────────┤
 │  Providers (LiteLLM)                                            │
 │  OpenRouter │ Anthropic │ OpenAI │ Moonshot │ DeepSeek │ Ollama │
@@ -154,6 +157,40 @@ result = await orchestrator.execute(
 
 Available patterns: `research`, `code`, `review`, `brainstorm`
 
+## Agent Team (Persona-Based Hierarchy)
+
+GigaBot features a company-style agent hierarchy with specialized roles:
+
+| Role | Model | Responsibility |
+|------|-------|----------------|
+| **Architect** | Claude Opus | System design, technical decisions |
+| **Lead Dev** | Claude Sonnet | Complex implementation, code review |
+| **Senior Dev** | Kimi K2.5 | Feature development |
+| **Junior Dev** | Gemini Flash | Simple tasks, bug fixes |
+| **QA Engineer** | Claude Sonnet | Testing, quality review |
+| **Auditor** | Claude Opus | Security review, final approval |
+| **Researcher** | Gemini Flash | Information gathering |
+
+### Interaction Modes
+
+**Deliberation Mode** — Team discusses and presents options:
+```bash
+gigabot reach "How should we improve authentication security?"
+# Or in chat: /reach How should we improve authentication security?
+```
+
+**Execution Mode** — Team delegates and completes work:
+```bash
+gigabot done "Add dark mode to the dashboard"
+# Or in chat: /done Add dark mode to the dashboard
+```
+
+### Quality Gates
+
+All team work passes through mandatory review:
+1. **QA Review** — Correctness, completeness, quality
+2. **Security Audit** — Vulnerability assessment (for sensitive tasks)
+
 ## Security
 
 GigaBot implements defense in depth:
@@ -172,6 +209,10 @@ GigaBot implements defense in depth:
 | `gigabot run <prompt>` | Single query |
 | `gigabot onboard` | Interactive setup |
 | `gigabot status` | System status |
+| `gigabot reach <goal>` | Team deliberation mode |
+| `gigabot done <task>` | Team execution mode |
+| `gigabot team status` | Show team composition |
+| `gigabot team roles` | List available roles |
 | `gigabot security audit` | Run security checks |
 | `gigabot approvals list` | List pending approvals |
 | `gigabot daemon install` | Install as system service |
