@@ -1,7 +1,7 @@
 """Base channel interface for chat platforms."""
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, AsyncIterator
 
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
@@ -107,6 +107,46 @@ class BaseChannel(ABC):
         )
         
         await self.bus.publish_inbound(msg)
+    
+    async def send_streaming(
+        self,
+        msg: OutboundMessage,
+        stream: AsyncIterator[str],
+    ) -> None:
+        """
+        Send a message with streaming content.
+        
+        Default implementation collects all content and sends as one message.
+        Channels can override for native streaming support (e.g., typing indicators).
+        
+        Args:
+            msg: The base message (chat_id, channel).
+            stream: Async iterator yielding content chunks.
+        """
+        # Collect all content
+        content_parts = []
+        async for chunk in stream:
+            content_parts.append(chunk)
+        
+        # Send as single message
+        full_msg = OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content="".join(content_parts),
+            metadata=msg.metadata,
+        )
+        await self.send(full_msg)
+    
+    async def send_typing(self, chat_id: str) -> None:
+        """
+        Send a typing indicator.
+        
+        Channels can override to implement platform-specific typing.
+        
+        Args:
+            chat_id: The chat to show typing in.
+        """
+        pass  # Default: no-op
     
     @property
     def is_running(self) -> bool:

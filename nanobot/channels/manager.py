@@ -53,6 +53,50 @@ class ChannelManager:
                 logger.info("WhatsApp channel enabled")
             except ImportError as e:
                 logger.warning(f"WhatsApp channel not available: {e}")
+        
+        # Discord channel
+        if self.config.channels.discord.enabled:
+            try:
+                from nanobot.channels.discord import DiscordChannel
+                self.channels["discord"] = DiscordChannel(
+                    self.config.channels.discord, self.bus
+                )
+                logger.info("Discord channel enabled")
+            except ImportError as e:
+                logger.warning(f"Discord channel not available: {e}")
+        
+        # Signal channel
+        if self.config.channels.signal.enabled:
+            try:
+                from nanobot.channels.signal import SignalChannel
+                self.channels["signal"] = SignalChannel(
+                    self.config.channels.signal, self.bus
+                )
+                logger.info("Signal channel enabled")
+            except ImportError as e:
+                logger.warning(f"Signal channel not available: {e}")
+        
+        # Matrix channel
+        if self.config.channels.matrix.enabled:
+            try:
+                from nanobot.channels.matrix import MatrixChannel
+                self.channels["matrix"] = MatrixChannel(
+                    self.config.channels.matrix, self.bus
+                )
+                logger.info("Matrix channel enabled")
+            except ImportError as e:
+                logger.warning(f"Matrix channel not available: {e}")
+        
+        # Slack channel
+        if self.config.channels.slack.enabled:
+            try:
+                from nanobot.channels.slack import SlackChannel
+                self.channels["slack"] = SlackChannel(
+                    self.config.channels.slack, self.bus
+                )
+                logger.info("Slack channel enabled")
+            except ImportError as e:
+                logger.warning(f"Slack channel not available: {e}")
     
     async def start_all(self) -> None:
         """Start WhatsApp channel and the outbound dispatcher."""

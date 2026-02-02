@@ -53,3 +53,7 @@ class Tool(ABC):
                 "parameters": self.parameters,
             }
         }
+
+
+# Alias for backward compatibility
+BaseTool = Tool

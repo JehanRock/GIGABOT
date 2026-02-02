@@ -598,6 +598,170 @@ def cron_run(
 
 
 # ============================================================================
+# Security Commands
+# ============================================================================
+
+security_app = typer.Typer(help="Security management commands")
+app.add_typer(security_app, name="security")
+
+
+@security_app.command("audit")
+def security_audit(
+    deep: bool = typer.Option(False, "--deep", "-d", help="Run deep checks (includes network probes)"),
+    fix: bool = typer.Option(False, "--fix", "-f", help="Auto-fix issues where possible"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Run security audit on configuration."""
+    from nanobot.config.loader import get_config_path
+    from nanobot.utils.helpers import get_workspace_path
+    from nanobot.security.audit import run_audit, AuditSeverity
+    
+    config_path = get_config_path()
+    workspace = get_workspace_path()
+    
+    results, summary, fixes = run_audit(config_path, workspace, deep=deep, auto_fix=fix)
+    
+    if json_output:
+        import json
+        output = {
+            "results": [
+                {
+                    "check": r.check_name,
+                    "passed": r.passed,
+                    "severity": r.severity.value,
+                    "message": r.message,
+                    "details": r.details,
+                    "fix_suggestion": r.fix_suggestion,
+                }
+                for r in results
+            ],
+            "summary": summary,
+            "fixes_applied": fixes,
+        }
+        console.print(json.dumps(output, indent=2))
+        return
+    
+    console.print(f"\n{__logo__} Security Audit\n")
+    
+    # Display results
+    severity_styles = {
+        AuditSeverity.CRITICAL: "[bold red]CRITICAL[/bold red]",
+        AuditSeverity.ERROR: "[red]ERROR[/red]",
+        AuditSeverity.WARNING: "[yellow]WARNING[/yellow]",
+        AuditSeverity.INFO: "[dim]INFO[/dim]",
+    }
+    
+    for result in results:
+        status = "[green]✓[/green]" if result.passed else "[red]✗[/red]"
+        severity = severity_styles.get(result.severity, result.severity.value)
+        console.print(f"  {status} {result.check_name}: {result.message}")
+        if not result.passed and result.fix_suggestion:
+            console.print(f"      [dim]Fix: {result.fix_suggestion}[/dim]")
+    
+    # Summary
+    console.print(f"\n[bold]Summary:[/bold]")
+    console.print(f"  Score: {summary['score']}%")
+    console.print(f"  Passed: {summary['passed']}/{summary['total_checks']}")
+    if summary['critical'] > 0:
+        console.print(f"  [bold red]Critical issues: {summary['critical']}[/bold red]")
+    if summary['errors'] > 0:
+        console.print(f"  [red]Errors: {summary['errors']}[/red]")
+    if summary['warnings'] > 0:
+        console.print(f"  [yellow]Warnings: {summary['warnings']}[/yellow]")
+    
+    # Fixes applied
+    if fixes:
+        console.print(f"\n[green]Fixes applied:[/green]")
+        for fix_msg in fixes:
+            console.print(f"  ✓ {fix_msg}")
+
+
+@security_app.command("generate-token")
+def security_generate_token(
+    length: int = typer.Option(32, "--length", "-l", help="Token length"),
+    save: bool = typer.Option(False, "--save", "-s", help="Save to config"),
+):
+    """Generate a secure authentication token."""
+    from nanobot.security.auth import generate_token
+    from nanobot.config.loader import load_config, save_config
+    
+    token = generate_token(length)
+    
+    if save:
+        config = load_config()
+        config.security.auth.mode = "token"
+        config.security.auth.token = token
+        save_config(config)
+        console.print(f"[green]✓[/green] Token saved to config")
+        console.print(f"[dim]Token: {token[:8]}...{token[-4:]}[/dim]")
+    else:
+        console.print(f"Token: {token}")
+        console.print(f"\n[dim]Use --save to save to config automatically[/dim]")
+
+
+@security_app.command("hash-password")
+def security_hash_password(
+    password: str = typer.Option(..., "--password", "-p", prompt=True, hide_input=True, help="Password to hash"),
+    save: bool = typer.Option(False, "--save", "-s", help="Save hash to config"),
+):
+    """Hash a password for authentication."""
+    from nanobot.security.auth import hash_password
+    from nanobot.config.loader import load_config, save_config
+    
+    password_hash = hash_password(password)
+    
+    if save:
+        config = load_config()
+        config.security.auth.mode = "password"
+        config.security.auth.password_hash = password_hash
+        save_config(config)
+        console.print(f"[green]✓[/green] Password hash saved to config")
+    else:
+        console.print(f"Hash: {password_hash}")
+        console.print(f"\n[dim]Use --save to save to config automatically[/dim]")
+
+
+@security_app.command("status")
+def security_status():
+    """Show security configuration status."""
+    from nanobot.config.loader import load_config
+    
+    config = load_config()
+    sec = config.security
+    
+    console.print(f"\n{__logo__} Security Status\n")
+    
+    # Authentication
+    auth_mode = sec.auth.mode
+    auth_status = "[green]✓[/green]" if auth_mode != "none" else "[yellow]⚠[/yellow]"
+    console.print(f"[bold]Authentication:[/bold]")
+    console.print(f"  {auth_status} Mode: {auth_mode}")
+    if auth_mode == "token":
+        has_token = bool(sec.auth.token)
+        console.print(f"  {'[green]✓[/green]' if has_token else '[red]✗[/red]'} Token configured: {has_token}")
+    
+    # Tool Policy
+    console.print(f"\n[bold]Tool Policy:[/bold]")
+    console.print(f"  Allow: {', '.join(sec.tool_policy.allow)}")
+    if sec.tool_policy.deny:
+        console.print(f"  Deny: {', '.join(sec.tool_policy.deny)}")
+    if sec.tool_policy.require_approval:
+        console.print(f"  Require approval: {', '.join(sec.tool_policy.require_approval)}")
+    
+    # Sandbox
+    console.print(f"\n[bold]Sandbox:[/bold]")
+    sandbox_status = "[green]✓[/green]" if sec.sandbox.mode != "off" else "[dim]off[/dim]"
+    console.print(f"  {sandbox_status} Mode: {sec.sandbox.mode}")
+    console.print(f"  Workspace access: {sec.sandbox.workspace_access}")
+    
+    # Encryption
+    console.print(f"\n[bold]Encryption:[/bold]")
+    console.print(f"  Config: {'[green]✓[/green]' if sec.encryption.encrypt_config else '[dim]off[/dim]'}")
+    console.print(f"  Memory: {'[green]✓[/green]' if sec.encryption.encrypt_memory else '[dim]off[/dim]'}")
+    console.print(f"  Sessions: {'[green]✓[/green]' if sec.encryption.encrypt_sessions else '[dim]off[/dim]'}")
+
+
+# ============================================================================
 # Status Commands
 # ============================================================================
 
@@ -624,13 +788,266 @@ def status():
         has_openrouter = bool(config.providers.openrouter.api_key)
         has_anthropic = bool(config.providers.anthropic.api_key)
         has_openai = bool(config.providers.openai.api_key)
+        has_moonshot = bool(config.providers.moonshot.api_key)
+        has_deepseek = bool(config.providers.deepseek.api_key)
         has_vllm = bool(config.providers.vllm.api_base)
         
-        console.print(f"OpenRouter API: {'[green]✓[/green]' if has_openrouter else '[dim]not set[/dim]'}")
-        console.print(f"Anthropic API: {'[green]✓[/green]' if has_anthropic else '[dim]not set[/dim]'}")
-        console.print(f"OpenAI API: {'[green]✓[/green]' if has_openai else '[dim]not set[/dim]'}")
+        console.print(f"\n[bold]Providers:[/bold]")
+        console.print(f"  OpenRouter: {'[green]✓[/green]' if has_openrouter else '[dim]not set[/dim]'}")
+        console.print(f"  Anthropic: {'[green]✓[/green]' if has_anthropic else '[dim]not set[/dim]'}")
+        console.print(f"  OpenAI: {'[green]✓[/green]' if has_openai else '[dim]not set[/dim]'}")
+        console.print(f"  Moonshot: {'[green]✓[/green]' if has_moonshot else '[dim]not set[/dim]'}")
+        console.print(f"  DeepSeek: {'[green]✓[/green]' if has_deepseek else '[dim]not set[/dim]'}")
         vllm_status = f"[green]✓ {config.providers.vllm.api_base}[/green]" if has_vllm else "[dim]not set[/dim]"
-        console.print(f"vLLM/Local: {vllm_status}")
+        console.print(f"  vLLM/Local: {vllm_status}")
+        
+        # Tiered routing status
+        if config.agents.tiered_routing.enabled:
+            console.print(f"\n[bold]Tiered Routing:[/bold] [green]enabled[/green]")
+            console.print(f"  Fallback tier: {config.agents.tiered_routing.fallback_tier}")
+        
+        # Security status
+        console.print(f"\n[bold]Security:[/bold]")
+        auth_mode = config.security.auth.mode
+        console.print(f"  Auth: {auth_mode} {'[green]✓[/green]' if auth_mode != 'none' else '[yellow]⚠[/yellow]'}")
+        console.print(f"  Sandbox: {config.security.sandbox.mode}")
+
+
+# ============================================================================
+# Approval Commands
+# ============================================================================
+
+approvals_app = typer.Typer(help="Manage pending approvals")
+app.add_typer(approvals_app, name="approvals")
+
+
+@approvals_app.command("list")
+def approvals_list():
+    """List pending approvals."""
+    from nanobot.security.approval import get_approval_manager
+    
+    manager = get_approval_manager()
+    pending = manager.get_pending()
+    
+    if not pending:
+        console.print("[dim]No pending approvals[/dim]")
+        return
+    
+    table = Table(title="Pending Approvals")
+    table.add_column("ID", style="cyan")
+    table.add_column("Tool", style="green")
+    table.add_column("Command", style="yellow", max_width=50)
+    table.add_column("Requester", style="blue")
+    table.add_column("Expires", style="red")
+    
+    import time
+    for approval in pending:
+        command = str(approval.arguments.get("command", ""))[:50]
+        expires_in = int(approval.expires_at - time.time())
+        expires_str = f"{expires_in}s" if expires_in > 0 else "expired"
+        
+        table.add_row(
+            approval.id,
+            approval.tool_name,
+            command,
+            approval.requester,
+            expires_str,
+        )
+    
+    console.print(table)
+
+
+@approvals_app.command("approve")
+def approvals_approve(
+    approval_id: str = typer.Argument(help="ID of the approval"),
+    reason: str = typer.Option("", help="Reason for approval"),
+):
+    """Approve a pending request."""
+    from nanobot.security.approval import get_approval_manager
+    
+    async def _approve():
+        manager = get_approval_manager()
+        success = await manager.approve(approval_id, "cli", reason)
+        return success
+    
+    success = asyncio.run(_approve())
+    
+    if success:
+        console.print(f"[green]✓[/green] Approved: {approval_id}")
+    else:
+        console.print(f"[red]✗[/red] Failed to approve: {approval_id}")
+
+
+@approvals_app.command("deny")
+def approvals_deny(
+    approval_id: str = typer.Argument(help="ID of the approval"),
+    reason: str = typer.Option("Denied by user", help="Reason for denial"),
+):
+    """Deny a pending request."""
+    from nanobot.security.approval import get_approval_manager
+    
+    async def _deny():
+        manager = get_approval_manager()
+        success = await manager.deny(approval_id, "cli", reason)
+        return success
+    
+    success = asyncio.run(_deny())
+    
+    if success:
+        console.print(f"[green]✓[/green] Denied: {approval_id}")
+    else:
+        console.print(f"[red]✗[/red] Failed to deny: {approval_id}")
+
+
+@approvals_app.command("show")
+def approvals_show(
+    approval_id: str = typer.Argument(help="ID of the approval"),
+):
+    """Show details of an approval."""
+    from nanobot.security.approval import get_approval_manager
+    import time
+    
+    manager = get_approval_manager()
+    approval = manager.get_approval(approval_id)
+    
+    if not approval:
+        console.print(f"[red]Approval not found: {approval_id}[/red]")
+        return
+    
+    console.print(f"\n[bold]Approval: {approval.id}[/bold]")
+    console.print(f"  Status: {approval.status.value}")
+    console.print(f"  Tool: {approval.tool_name}")
+    console.print(f"  Requester: {approval.requester}")
+    console.print(f"  Reason: {approval.reason}")
+    console.print(f"\n[bold]Arguments:[/bold]")
+    for key, value in approval.arguments.items():
+        console.print(f"  {key}: {value}")
+    
+    if approval.decided_by:
+        console.print(f"\n[bold]Decision:[/bold]")
+        console.print(f"  By: {approval.decided_by}")
+        console.print(f"  Reason: {approval.decision_reason}")
+
+
+# ============================================================================
+# Daemon Commands
+# ============================================================================
+
+daemon_app = typer.Typer(help="Manage GigaBot as a system service")
+app.add_typer(daemon_app, name="daemon")
+
+
+@daemon_app.command("install")
+def daemon_install(
+    start_on_boot: bool = typer.Option(True, help="Start on system boot"),
+):
+    """Install GigaBot as a system service."""
+    from nanobot.daemon import get_daemon_manager, DaemonConfig
+    
+    config = DaemonConfig(start_on_boot=start_on_boot)
+    manager = get_daemon_manager()
+    manager.config = config
+    
+    if manager.install():
+        console.print("[green]✓[/green] Service installed successfully")
+        console.print(f"  Platform: {manager.platform}")
+        if start_on_boot:
+            console.print("  Will start on boot")
+        console.print("\nStart with: nanobot daemon start")
+    else:
+        console.print("[red]✗[/red] Failed to install service")
+        console.print("  You may need administrator/sudo privileges")
+
+
+@daemon_app.command("uninstall")
+def daemon_uninstall():
+    """Uninstall the system service."""
+    from nanobot.daemon import get_daemon_manager
+    
+    manager = get_daemon_manager()
+    
+    if manager.uninstall():
+        console.print("[green]✓[/green] Service uninstalled")
+    else:
+        console.print("[red]✗[/red] Failed to uninstall service")
+
+
+@daemon_app.command("status")
+def daemon_status():
+    """Check service status."""
+    from nanobot.daemon import get_daemon_manager
+    
+    manager = get_daemon_manager()
+    status = manager.status()
+    info = manager.get_info()
+    
+    console.print(f"\n[bold]GigaBot Service Status[/bold]")
+    console.print(f"  Platform: {info['platform']}")
+    console.print(f"  Service name: {info['service_name']}")
+    
+    status_color = {
+        "running": "green",
+        "stopped": "yellow",
+        "not_installed": "dim",
+        "failed": "red",
+    }.get(status.value, "white")
+    
+    console.print(f"  Status: [{status_color}]{status.value}[/{status_color}]")
+
+
+@daemon_app.command("start")
+def daemon_start():
+    """Start the service."""
+    from nanobot.daemon import get_daemon_manager
+    
+    manager = get_daemon_manager()
+    
+    if manager.start():
+        console.print("[green]✓[/green] Service started")
+    else:
+        console.print("[red]✗[/red] Failed to start service")
+
+
+@daemon_app.command("stop")
+def daemon_stop():
+    """Stop the service."""
+    from nanobot.daemon import get_daemon_manager
+    
+    manager = get_daemon_manager()
+    
+    if manager.stop():
+        console.print("[green]✓[/green] Service stopped")
+    else:
+        console.print("[red]✗[/red] Failed to stop service")
+
+
+@daemon_app.command("restart")
+def daemon_restart():
+    """Restart the service."""
+    from nanobot.daemon import get_daemon_manager
+    
+    manager = get_daemon_manager()
+    
+    if manager.restart():
+        console.print("[green]✓[/green] Service restarted")
+    else:
+        console.print("[red]✗[/red] Failed to restart service")
+
+
+@daemon_app.command("logs")
+def daemon_logs(
+    lines: int = typer.Option(50, help="Number of lines to show"),
+):
+    """View service logs."""
+    from nanobot.daemon import get_daemon_manager
+    
+    manager = get_daemon_manager()
+    logs = manager.logs(lines)
+    
+    if logs:
+        console.print(logs)
+    else:
+        console.print("[dim]No logs available[/dim]")
 
 
 if __name__ == "__main__":

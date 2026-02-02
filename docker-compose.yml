@@ -1,0 +1,76 @@
+# GigaBot Docker Compose
+# Usage: docker compose up -d
+
+services:
+  gigabot:
+    build: .
+    container_name: gigabot
+    restart: unless-stopped
+    
+    ports:
+      - "18790:18790"
+      - "18791:18791"
+    
+    volumes:
+      # Configuration - mount your config directory
+      - ./config:/root/.nanobot
+      # Workspace - agent's working directory
+      - ./workspace:/root/.nanobot/workspace
+    
+    environment:
+      # LLM Provider API Keys (add the ones you use)
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - MOONSHOT_API_KEY=${MOONSHOT_API_KEY:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      
+      # Channel Tokens
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:-}
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN:-}
+      - SLACK_APP_TOKEN=${SLACK_APP_TOKEN:-}
+      
+      # Security
+      - NANOBOT_SECURITY__AUTH__MODE=${NANOBOT_AUTH_MODE:-none}
+      - NANOBOT_SECURITY__AUTH__TOKEN=${NANOBOT_AUTH_TOKEN:-}
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:18790/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Optional: WhatsApp Bridge (if using WhatsApp channel)
+  whatsapp-bridge:
+    image: node:20-slim
+    container_name: gigabot-whatsapp
+    restart: unless-stopped
+    profiles:
+      - whatsapp
+    
+    working_dir: /app/bridge
+    command: npm start
+    
+    volumes:
+      - ./bridge:/app/bridge
+      - whatsapp-data:/app/bridge/.wwebjs_auth
+    
+    ports:
+      - "3001:3001"
+    
+    environment:
+      - PORT=3001
+    
+    depends_on:
+      - gigabot
+
+volumes:
+  whatsapp-data:

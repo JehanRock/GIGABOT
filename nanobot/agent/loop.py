@@ -11,6 +11,7 @@ from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
 from nanobot.agent.context import ContextBuilder
+from nanobot.agent.compaction import ContextGuard, create_context_guard
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.filesystem import ReadFileTool, WriteFileTool, EditFileTool, ListDirTool
 from nanobot.agent.tools.shell import ExecTool
@@ -40,7 +41,9 @@ class AgentLoop:
         workspace: Path,
         model: str | None = None,
         max_iterations: int = 20,
-        brave_api_key: str | None = None
+        brave_api_key: str | None = None,
+        enable_context_guard: bool = True,
+        context_threshold: float = 0.8,
     ):
         self.bus = bus
         self.provider = provider
@@ -59,6 +62,14 @@ class AgentLoop:
             model=self.model,
             brave_api_key=brave_api_key,
         )
+        
+        # Context window guard
+        self.context_guard: ContextGuard | None = None
+        if enable_context_guard:
+            self.context_guard = create_context_guard(
+                model=self.model,
+                threshold=context_threshold,
+            )
         
         self._running = False
         self._register_default_tools()
@@ -161,6 +172,12 @@ class AgentLoop:
         
         while iteration < self.max_iterations:
             iteration += 1
+            
+            # Apply context compaction if needed
+            if self.context_guard:
+                messages = await self.context_guard.compact_if_needed(
+                    messages, self.provider
+                )
             
             # Call LLM
             response = await self.provider.chat(
