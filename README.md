@@ -1,359 +1,315 @@
 <div align="center">
-  <img src="nanobot_logo.png" alt="nanobot" width="500">
-  <h1>nanobot: Ultra-Lightweight Personal AI Assistant</h1>
+  <h1>GigaBot</h1>
+  <h3>Enterprise-Grade AI Assistant Framework</h3>
   <p>
-    <a href="https://pypi.org/project/nanobot-ai/"><img src="https://img.shields.io/pypi/v/nanobot-ai" alt="PyPI"></a>
-    <a href="https://pepy.tech/project/nanobot-ai"><img src="https://static.pepy.tech/badge/nanobot-ai" alt="Downloads"></a>
     <img src="https://img.shields.io/badge/python-≥3.11-blue" alt="Python">
     <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
-    <a href="./COMMUNICATION.md"><img src="https://img.shields.io/badge/Feishu-Group-E9DBFC?style=flat&logo=feishu&logoColor=white" alt="Feishu"></a>
-    <a href="./COMMUNICATION.md"><img src="https://img.shields.io/badge/WeChat-Group-C5EAB4?style=flat&logo=wechat&logoColor=white" alt="WeChat"></a>
+    <img src="https://img.shields.io/badge/status-beta-orange" alt="Status">
   </p>
 </div>
 
-🐈 **nanobot** is an **ultra-lightweight** personal AI assistant inspired by [Clawdbot](https://github.com/openclaw/openclaw) 
+**GigaBot** is an enterprise-grade AI assistant framework that transforms the lightweight foundations of personal AI assistants into a comprehensive, production-ready platform.
 
-⚡️ Delivers core agent functionality in just **~4,000** lines of code — **99% smaller** than Clawdbot's 430k+ lines.
+Built with a focus on **performance**, **security**, **privacy**, and **autonomy** — GigaBot delivers powerful multi-agent capabilities while maintaining a clean, extensible codebase.
 
-## 📢 News
+## Key Features
 
-- **2025-02-01** 🎉 nanobot launched! Welcome to try 🐈 nanobot!
+| Feature | Description |
+|---------|-------------|
+| **Multi-Channel** | Telegram, WhatsApp, Discord, Signal, Matrix, Slack |
+| **Tiered Routing** | Automatic model selection based on task complexity |
+| **Multi-Agent Swarm** | Orchestrate multiple agents for complex tasks |
+| **Security Layers** | Auth, policies, sandboxing, approval workflows |
+| **Self-Hosted** | Complete privacy, no telemetry, encrypted channels |
+| **WebUI Dashboard** | Real-time monitoring with WebSocket streaming |
 
-## Key Features of nanobot:
+## Architecture
 
-🪶 **Ultra-Lightweight**: Just ~4,000 lines of code — 99% smaller than Clawdbot - core functionality.
-
-🔬 **Research-Ready**: Clean, readable code that's easy to understand, modify, and extend for research.
-
-⚡️ **Lightning Fast**: Minimal footprint means faster startup, lower resource usage, and quicker iterations.
-
-💎 **Easy-to-Use**: One-click to depoly and you're ready to go.
-
-## 🏗️ Architecture
-
-<p align="center">
-  <img src="nanobot_arch.png" alt="nanobot architecture" width="800">
-</p>
-
-## ✨ Features
-
-<table align="center">
-  <tr align="center">
-    <th><p align="center">📈 24/7 Real-Time Market Analysis</p></th>
-    <th><p align="center">🚀 Full-Stack Software Engineer</p></th>
-    <th><p align="center">📅 Smart Daily Routine Manager</p></th>
-    <th><p align="center">📚 Personal Knowledge Assistant</p></th>
-  </tr>
-  <tr>
-    <td align="center"><p align="center"><img src="case/search.gif" width="180" height="400"></p></td>
-    <td align="center"><p align="center"><img src="case/code.gif" width="180" height="400"></p></td>
-    <td align="center"><p align="center"><img src="case/scedule.gif" width="180" height="400"></p></td>
-    <td align="center"><p align="center"><img src="case/memory.gif" width="180" height="400"></p></td>
-  </tr>
-  <tr>
-    <td align="center">Discovery • Insights • Trends</td>
-    <td align="center">Develop • Deploy • Scale</td>
-    <td align="center">Schedule • Automate • Organize</td>
-    <td align="center">Learn • Memory • Reasoning</td>
-  </tr>
-</table>
-
-## 📦 Install
-
-**Install from PyPi**
-
-```bash
-pip install nanobot-ai
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                           GigaBot                               │
+├─────────────────────────────────────────────────────────────────┤
+│  Channels          │  Agent Core        │  Services             │
+│  ├─ Telegram       │  ├─ Loop           │  ├─ Cron              │
+│  ├─ WhatsApp       │  ├─ Context        │  ├─ Heartbeat         │
+│  ├─ Discord        │  ├─ Tools          │  ├─ Hooks             │
+│  ├─ Signal         │  ├─ Memory         │  ├─ WebUI             │
+│  ├─ Matrix         │  ├─ Compaction     │  └─ Daemon            │
+│  └─ Slack          │  └─ Subagents      │                       │
+├─────────────────────────────────────────────────────────────────┤
+│  Routing           │  Swarm             │  Security             │
+│  ├─ Classifier     │  ├─ Orchestrator   │  ├─ Auth              │
+│  └─ Router         │  ├─ Workers        │  ├─ Policy            │
+│                    │  └─ Patterns       │  ├─ Sandbox           │
+│                    │                    │  ├─ Approval          │
+│                    │                    │  └─ Audit             │
+├─────────────────────────────────────────────────────────────────┤
+│  Providers (LiteLLM)                                            │
+│  OpenRouter │ Anthropic │ OpenAI │ Moonshot │ DeepSeek │ Ollama │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-**Install from source** (recommended for development)
+## Quick Start
+
+### Installation
 
 ```bash
-git clone https://github.com/HKUDS/nanobot.git
-cd nanobot
+# From source
+git clone https://github.com/your-repo/gigabot.git
+cd gigabot
 pip install -e .
 ```
 
-## 🚀 Quick Start
-
-> [!TIP]
-> Set your API key in `~/.nanobot/config.json`.
-> Get API keys: [OpenRouter](https://openrouter.ai/keys) (LLM) · [Brave Search](https://brave.com/search/api/) (optional, for web search)
-> You can also change the model to `minimax/minimax-m2` for lower cost.
-
-**1. Initialize**
+### Configuration
 
 ```bash
-nanobot onboard
+# Interactive setup
+gigabot onboard
+
+# Or create config manually
+mkdir -p ~/.gigabot
 ```
 
-**2. Configure** (`~/.nanobot/config.json`)
-
-```json
-{
-  "providers": {
-    "openrouter": {
-      "apiKey": "sk-or-v1-xxx"
-    }
-  },
-  "agents": {
-    "defaults": {
-      "model": "anthropic/claude-opus-4-5"
-    }
-  },
-  "webSearch": {
-    "apiKey": "BSA-xxx"
-  }
-}
-```
-
-
-**3. Chat**
+### Run
 
 ```bash
-nanobot agent -m "What is 2+2?"
+# Start all services
+gigabot gateway
+
+# Or run specific components
+gigabot chat          # CLI chat
+gigabot ui            # WebUI only
 ```
 
-That's it! You have a working AI assistant in 2 minutes.
+## Configuration
 
-## 🖥️ Local Models (vLLM)
+Configuration is stored in `~/.gigabot/config.yaml`:
 
-Run nanobot with your own local models using vLLM or any OpenAI-compatible server.
+```yaml
+agents:
+  defaults:
+    model: anthropic/claude-opus-4-5
+    max_tokens: 8192
+    temperature: 0.7
+  
+  tiered_routing:
+    enabled: true
+    tiers:
+      daily_driver:
+        models: [moonshot/kimi-k2.5]
+      coder:
+        models: [anthropic/claude-sonnet-4-5]
+      specialist:
+        models: [anthropic/claude-opus-4-5]
 
-**1. Start your vLLM server**
+channels:
+  telegram:
+    enabled: true
+    token: ${TELEGRAM_BOT_TOKEN}
+    allow_from: []
+  
+  discord:
+    enabled: true
+    token: ${DISCORD_BOT_TOKEN}
+    allow_guilds: []
+    allow_channels: []
 
-```bash
-vllm serve meta-llama/Llama-3.1-8B-Instruct --port 8000
+security:
+  auth:
+    mode: token
+    token: ${GIGABOT_AUTH_TOKEN}
+  
+  sandbox:
+    mode: non-main
+    scope: session
+
+providers:
+  openrouter:
+    api_key: ${OPENROUTER_API_KEY}
 ```
 
-**2. Configure** (`~/.nanobot/config.json`)
+## Tiered Model Routing
 
-```json
-{
-  "providers": {
-    "vllm": {
-      "apiKey": "dummy",
-      "apiBase": "http://localhost:8000/v1"
-    }
-  },
-  "agents": {
-    "defaults": {
-      "model": "meta-llama/Llama-3.1-8B-Instruct"
-    }
-  }
-}
+GigaBot automatically routes tasks to the optimal model based on complexity:
+
+| Tier | Use Cases | Example Models |
+|------|-----------|----------------|
+| **Daily Driver** | Simple chat, basic questions, task management | Moonshot Kimi, GPT-4o-mini |
+| **Coder** | Code generation, debugging, implementation | Claude Sonnet, GPT-4o |
+| **Specialist** | Complex analysis, research, creative writing | Claude Opus, o1 |
+
+## Multi-Agent Swarm
+
+Orchestrate multiple agents for complex tasks:
+
+```python
+from gigabot.swarm import SwarmOrchestrator
+
+orchestrator = SwarmOrchestrator(config, provider, workspace)
+result = await orchestrator.execute(
+    objective="Research and summarize AI trends",
+    pattern="research"
+)
 ```
 
-**3. Chat**
+Available patterns: `research`, `code`, `review`, `brainstorm`
 
-```bash
-nanobot agent -m "Hello from my local LLM!"
-```
+## Security
 
-> [!TIP]
-> The `apiKey` can be any non-empty string for local servers that don't require authentication.
+GigaBot implements defense in depth:
 
-## 💬 Chat Apps
-
-Talk to your nanobot through Telegram or WhatsApp — anytime, anywhere.
-
-| Channel | Setup |
-|---------|-------|
-| **Telegram** | Easy (just a token) |
-| **WhatsApp** | Medium (scan QR) |
-
-<details>
-<summary><b>Telegram</b> (Recommended)</summary>
-
-**1. Create a bot**
-- Open Telegram, search `@BotFather`
-- Send `/newbot`, follow prompts
-- Copy the token
-
-**2. Configure**
-
-```json
-{
-  "channels": {
-    "telegram": {
-      "enabled": true,
-      "token": "YOUR_BOT_TOKEN",
-      "allowFrom": ["YOUR_USER_ID"]
-    }
-  }
-}
-```
-
-> Get your user ID from `@userinfobot` on Telegram.
-
-**3. Run**
-
-```bash
-nanobot gateway
-```
-
-</details>
-
-<details>
-<summary><b>WhatsApp</b></summary>
-
-Requires **Node.js ≥18**.
-
-**1. Link device**
-
-```bash
-nanobot channels login
-# Scan QR with WhatsApp → Settings → Linked Devices
-```
-
-**2. Configure**
-
-```json
-{
-  "channels": {
-    "whatsapp": {
-      "enabled": true,
-      "allowFrom": ["+1234567890"]
-    }
-  }
-}
-```
-
-**3. Run** (two terminals)
-
-```bash
-# Terminal 1
-nanobot channels login
-
-# Terminal 2
-nanobot gateway
-```
-
-</details>
-
-## ⚙️ Configuration
-
-<details>
-<summary><b>Full config example</b></summary>
-
-```json
-{
-  "agents": {
-    "defaults": {
-      "model": "anthropic/claude-opus-4-5"
-    }
-  },
-  "providers": {
-    "openrouter": {
-      "apiKey": "sk-or-v1-xxx"
-    }
-  },
-  "channels": {
-    "telegram": {
-      "enabled": true,
-      "token": "123456:ABC...",
-      "allowFrom": ["123456789"]
-    },
-    "whatsapp": {
-      "enabled": false
-    }
-  },
-  "tools": {
-    "web": {
-      "search": {
-        "apiKey": "BSA..."
-      }
-    }
-  }
-}
-```
-
-</details>
+1. **Network Layer**: Bind mode, auth tokens, Tailscale integration
+2. **Channel Layer**: DM pairing, user/guild/channel allowlists
+3. **Tool Layer**: Allow/deny lists, approval workflows, elevated mode
+4. **Runtime Layer**: Docker sandbox, resource limits, capability dropping
 
 ## CLI Reference
 
 | Command | Description |
 |---------|-------------|
-| `nanobot onboard` | Initialize config & workspace |
-| `nanobot agent -m "..."` | Chat with the agent |
-| `nanobot agent` | Interactive chat mode |
-| `nanobot gateway` | Start the gateway |
-| `nanobot status` | Show status |
-| `nanobot channels login` | Link WhatsApp (scan QR) |
-| `nanobot channels status` | Show channel status |
+| `gigabot gateway` | Start all services |
+| `gigabot chat` | Interactive chat |
+| `gigabot run <prompt>` | Single query |
+| `gigabot onboard` | Interactive setup |
+| `gigabot status` | System status |
+| `gigabot security audit` | Run security checks |
+| `gigabot approvals list` | List pending approvals |
+| `gigabot daemon install` | Install as system service |
+| `gigabot cron list` | List scheduled jobs |
 
-<details>
-<summary><b>Scheduled Tasks (Cron)</b></summary>
+## WebUI Dashboard
+
+Access the dashboard at `http://localhost:18790` when running `gigabot gateway`.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | GET | Dashboard |
+| `/api/status` | GET | System status |
+| `/api/config` | GET | Configuration |
+| `/api/sessions` | GET | Active sessions |
+| `/api/tracking` | GET | Token usage |
+| `/api/channels` | GET | Channel status |
+| `/api/chat` | POST | Send message |
+| `/ws` | WS | Streaming |
+| `/health` | GET | Health check |
+
+## Deployment
+
+### Docker
 
 ```bash
-# Add a job
-nanobot cron add --name "daily" --message "Good morning!" --cron "0 9 * * *"
-nanobot cron add --name "hourly" --message "Check status" --every 3600
+# Build and run
+docker compose up -d
 
-# List jobs
-nanobot cron list
-
-# Remove a job
-nanobot cron remove <job_id>
+# With WhatsApp bridge
+docker compose --profile whatsapp up -d
 ```
 
-</details>
+### System Service
 
-## 📁 Project Structure
+```bash
+# Install as service
+gigabot daemon install
 
-```
-nanobot/
-├── agent/          # 🧠 Core agent logic
-│   ├── loop.py     #    Agent loop (LLM ↔ tool execution)
-│   ├── context.py  #    Prompt builder
-│   ├── memory.py   #    Persistent memory
-│   ├── skills.py   #    Skills loader
-│   ├── subagent.py #    Background task execution
-│   └── tools/      #    Built-in tools (incl. spawn)
-├── skills/         # 🎯 Bundled skills (github, weather, tmux...)
-├── channels/       # 📱 WhatsApp integration
-├── bus/            # 🚌 Message routing
-├── cron/           # ⏰ Scheduled tasks
-├── heartbeat/      # 💓 Proactive wake-up
-├── providers/      # 🤖 LLM providers (OpenRouter, etc.)
-├── session/        # 💬 Conversation sessions
-├── config/         # ⚙️ Configuration
-└── cli/            # 🖥️ Commands
+# Start/stop
+gigabot daemon start
+gigabot daemon stop
 ```
 
-## 🗺️ Roadmap
+## Extending GigaBot
 
-- [ ] **Multi-modal** — See and hear (images, voice, video)
-- [ ] **Long-term memory** — Never forget important context
-- [ ] **Better reasoning** — Multi-step planning and reflection
-- [ ] **More integrations** — Discord, Slack, email, calendar
-- [ ] **Self-improvement** — Learn from feedback and mistakes
+### Custom Tools
 
-**Want to help?** Pick an item and [open a PR](https://github.com/HKUDS/nanobot/pulls)!
+```python
+from gigabot.agent.tools import Tool
+
+class MyTool(Tool):
+    @property
+    def name(self) -> str:
+        return "my_tool"
+    
+    @property
+    def description(self) -> str:
+        return "Does something useful"
+    
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "input": {"type": "string"}
+            }
+        }
+    
+    async def execute(self, input: str) -> str:
+        return f"Processed: {input}"
+```
+
+### Custom Channels
+
+```python
+from gigabot.channels.base import BaseChannel
+
+class MyChannel(BaseChannel):
+    name = "my_channel"
+    
+    async def start(self) -> None:
+        # Connect to platform
+        pass
+    
+    async def stop(self) -> None:
+        # Disconnect
+        pass
+    
+    async def send(self, msg: OutboundMessage) -> None:
+        # Send message
+        pass
+```
 
 ---
 
-## ⭐ Star History
+## Acknowledgments
 
-*Community Growth Trajectory*
+GigaBot stands on the shoulders of giants. We gratefully acknowledge:
 
-<div align="center">
-  <a href="https://star-history.com/#HKUDS/nanobot&Date">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=HKUDS/nanobot&type=Date&theme=dark" />
-      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=HKUDS/nanobot&type=Date" />
-      <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=HKUDS/nanobot&type=Date" style="border-radius: 15px; box-shadow: 0 0 30px rgba(0, 217, 255, 0.3);" />
-    </picture>
-  </a>
-</div>
+### Nanobot by HKUDS
+
+GigaBot is built upon the foundation of **[Nanobot](https://github.com/HKUDS/nanobot)**, created by the **Hong Kong University Data Science (HKUDS)** research group. Nanobot demonstrated that powerful AI agent functionality could be achieved in an ultra-lightweight codebase (~4,000 lines) — a philosophy GigaBot continues to honor while expanding into enterprise territory.
+
+The original Nanobot was inspired by Clawdbot and provided:
+- Clean, readable agent architecture
+- Minimal footprint with maximum capability
+- Research-ready extensibility
+
+### OpenClaw
+
+Special thanks to **[OpenClaw](https://github.com/openclaw/openclaw)** for architectural inspiration. OpenClaw's comprehensive approach to personal AI assistants — including multi-channel communication, gateway architecture, and extensive tooling — has significantly influenced GigaBot's enterprise features:
+
+- Multi-channel strategy (WhatsApp, Telegram, Discord, Signal, Matrix, Slack)
+- Gateway-based service architecture
+- Daemon and service management patterns
+- Security and sandboxing approaches
 
 ---
 
-## 🤝 Contribute
+## License
 
-PRs welcome! The codebase is intentionally small and readable. 🤗
+MIT License - see [LICENSE](LICENSE)
+
+---
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Run tests: `pytest`
+5. Submit a pull request
+
+PRs welcome! The codebase is intentionally kept clean and readable.
+
+---
 
 <p align="center">
-  <em> Thanks for visiting ✨ nanobot!</em><br><br>
-  <img src="https://visitor-badge.laobi.icu/badge?page_id=HKUDS.nanobot&style=for-the-badge&color=00d4ff" alt="Views">
+  <em>GigaBot — Enterprise AI, Lightweight Core</em>
 </p>

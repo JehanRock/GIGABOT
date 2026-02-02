@@ -1,4 +1,4 @@
-"""CLI commands for nanobot."""
+"""CLI commands for GigaBot."""
 
 import asyncio
 from pathlib import Path
@@ -10,8 +10,8 @@ from rich.table import Table
 from nanobot import __version__, __logo__
 
 app = typer.Typer(
-    name="nanobot",
-    help=f"{__logo__} nanobot - Personal AI Assistant",
+    name="gigabot",
+    help=f"{__logo__} GigaBot - Enterprise AI Assistant",
     no_args_is_help=True,
 )
 
@@ -20,7 +20,7 @@ console = Console()
 
 def version_callback(value: bool):
     if value:
-        console.print(f"{__logo__} nanobot v{__version__}")
+        console.print(f"{__logo__} GigaBot v{__version__}")
         raise typer.Exit()
 
 
@@ -30,7 +30,7 @@ def main(
         None, "--version", "-v", callback=version_callback, is_eager=True
     ),
 ):
-    """nanobot - Personal AI Assistant."""
+    """GigaBot - Enterprise AI Assistant."""
     pass
 
 
@@ -41,7 +41,7 @@ def main(
 
 @app.command()
 def onboard():
-    """Initialize nanobot configuration and workspace."""
+    """Initialize GigaBot configuration and workspace."""
     from nanobot.config.loader import get_config_path, save_config
     from nanobot.config.schema import Config
     from nanobot.utils.helpers import get_workspace_path
@@ -65,12 +65,12 @@ def onboard():
     # Create default bootstrap files
     _create_workspace_templates(workspace)
     
-    console.print(f"\n{__logo__} nanobot is ready!")
+    console.print(f"\n{__logo__} GigaBot is ready!")
     console.print("\nNext steps:")
-    console.print("  1. Add your API key to [cyan]~/.nanobot/config.json[/cyan]")
+    console.print("  1. Add your API key to [cyan]~/.gigabot/config.yaml[/cyan]")
     console.print("     Get one at: https://openrouter.ai/keys")
-    console.print("  2. Chat: [cyan]nanobot agent -m \"Hello!\"[/cyan]")
-    console.print("\n[dim]Want Telegram/WhatsApp? See: https://github.com/HKUDS/nanobot#-chat-apps[/dim]")
+    console.print("  2. Chat: [cyan]gigabot agent -m \"Hello!\"[/cyan]")
+    console.print("\n[dim]For multi-channel setup (Telegram/Discord/WhatsApp), see the README[/dim]")
 
 
 
@@ -91,18 +91,18 @@ You are a helpful AI assistant. Be concise, accurate, and friendly.
 """,
         "SOUL.md": """# Soul
 
-I am nanobot, a lightweight AI assistant.
+I am GigaBot, an enterprise-grade AI assistant.
 
 ## Personality
 
-- Helpful and friendly
-- Concise and to the point
-- Curious and eager to learn
+- Helpful and professional
+- Concise and accurate
+- Proactive and reliable
 
 ## Values
 
 - Accuracy over speed
-- User privacy and safety
+- User privacy and security
 - Transparency in actions
 """,
         "USER.md": """# User
@@ -157,7 +157,7 @@ def gateway(
     port: int = typer.Option(18790, "--port", "-p", help="Gateway port"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
 ):
-    """Start the nanobot gateway."""
+    """Start the GigaBot gateway."""
     from nanobot.config.loader import load_config, get_data_dir
     from nanobot.bus.queue import MessageBus
     from nanobot.providers.litellm_provider import LiteLLMProvider
@@ -171,7 +171,7 @@ def gateway(
         import logging
         logging.basicConfig(level=logging.DEBUG)
     
-    console.print(f"{__logo__} Starting nanobot gateway on port {port}...")
+    console.print(f"{__logo__} Starting GigaBot gateway on port {port}...")
     
     config = load_config()
     
@@ -641,7 +641,7 @@ def security_audit(
         console.print(json.dumps(output, indent=2))
         return
     
-    console.print(f"\n{__logo__} Security Audit\n")
+    console.print(f"\n{__logo__} GigaBot Security Audit\n")
     
     # Display results
     severity_styles = {
@@ -729,7 +729,7 @@ def security_status():
     config = load_config()
     sec = config.security
     
-    console.print(f"\n{__logo__} Security Status\n")
+    console.print(f"\n{__logo__} GigaBot Security Status\n")
     
     # Authentication
     auth_mode = sec.auth.mode
@@ -768,14 +768,14 @@ def security_status():
 
 @app.command()
 def status():
-    """Show nanobot status."""
+    """Show GigaBot status."""
     from nanobot.config.loader import load_config, get_config_path
     from nanobot.utils.helpers import get_workspace_path
     
     config_path = get_config_path()
     workspace = get_workspace_path()
     
-    console.print(f"{__logo__} nanobot Status\n")
+    console.print(f"{__logo__} GigaBot Status\n")
     
     console.print(f"Config: {config_path} {'[green]✓[/green]' if config_path.exists() else '[red]✗[/red]'}")
     console.print(f"Workspace: {workspace} {'[green]✓[/green]' if workspace.exists() else '[red]✗[/red]'}")
@@ -953,7 +953,7 @@ def daemon_install(
         console.print(f"  Platform: {manager.platform}")
         if start_on_boot:
             console.print("  Will start on boot")
-        console.print("\nStart with: nanobot daemon start")
+        console.print("\nStart with: gigabot daemon start")
     else:
         console.print("[red]✗[/red] Failed to install service")
         console.print("  You may need administrator/sudo privileges")

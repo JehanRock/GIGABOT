@@ -424,7 +424,7 @@ class UIServer:
         <div id="chat" class="tab-content">
             <div class="chat-container">
                 <div class="messages" id="messages"></div>
-                <div class="typing" id="typing" style="display: none;">GigaBot is typing...</div>
+                <div class="typing" id="typing" style="display: none;">GigaBot is thinking...</div>
                 <div class="input-row">
                     <input type="text" id="chat-input" placeholder="Type a message..." />
                     <button onclick="sendMessage()">Send</button>

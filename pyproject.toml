@@ -64,7 +64,8 @@ all = [
 ]
 
 [project.scripts]
-nanobot = "nanobot.cli.commands:app"
+gigabot = "nanobot.cli.commands:app"
+nanobot = "nanobot.cli.commands:app"  # Legacy alias for backward compatibility
 
 [build-system]
 requires = ["hatchling"]

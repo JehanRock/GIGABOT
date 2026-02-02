@@ -2,7 +2,7 @@
 
 **Enterprise-Grade AI Assistant Framework**
 
-GigaBot transforms the Nanobot foundation into a comprehensive AI assistant platform with focus on:
+GigaBot is an enterprise-grade AI assistant platform with focus on:
 - **Performance**: Tiered model routing, streaming responses, context optimization
 - **Security**: Multi-layer authentication, tool policies, sandboxed execution
 - **Privacy**: Self-hosted, no telemetry, encrypted channels
@@ -16,12 +16,9 @@ GigaBot transforms the Nanobot foundation into a comprehensive AI assistant plat
 ### Installation
 
 ```bash
-# From PyPI
-pip install nanobot-ai
-
 # From source
-git clone https://github.com/your-repo/nanobot.git
-cd nanobot
+git clone https://github.com/your-repo/gigabot.git
+cd gigabot
 pip install -e .
 ```
 
@@ -29,21 +26,21 @@ pip install -e .
 
 ```bash
 # Interactive setup
-nanobot onboard
+gigabot onboard
 
 # Or create config manually
-mkdir -p ~/.nanobot
+mkdir -p ~/.gigabot
 ```
 
 ### Run
 
 ```bash
 # Start the gateway (all services)
-nanobot gateway
+gigabot gateway
 
 # Or run specific components
-nanobot chat          # CLI chat
-nanobot ui            # WebUI only
+gigabot chat          # CLI chat
+gigabot ui            # WebUI only
 ```
 
 ---
@@ -124,7 +121,7 @@ Automatic routing to optimal models based on task complexity:
 Orchestrate multiple agents for complex tasks:
 
 ```python
-from nanobot.swarm import SwarmOrchestrator
+from gigabot.swarm import SwarmOrchestrator
 
 orchestrator = SwarmOrchestrator(config, provider, workspace)
 result = await orchestrator.execute(
@@ -153,38 +150,38 @@ Real-time token output for better UX:
 
 ```bash
 # Core Commands
-nanobot gateway          # Start all services
-nanobot chat            # Interactive chat
-nanobot run <prompt>    # Single query
+gigabot gateway          # Start all services
+gigabot chat            # Interactive chat
+gigabot run <prompt>    # Single query
 
 # Configuration
-nanobot onboard         # Interactive setup
-nanobot config show     # Show config
-nanobot status          # System status
+gigabot onboard         # Interactive setup
+gigabot config show     # Show config
+gigabot status          # System status
 
 # Security
-nanobot security audit  # Run security checks
+gigabot security audit  # Run security checks
 
 # Approvals
-nanobot approvals list   # List pending
-nanobot approvals approve <id>
-nanobot approvals deny <id>
+gigabot approvals list   # List pending
+gigabot approvals approve <id>
+gigabot approvals deny <id>
 
 # Daemon Service
-nanobot daemon install   # Install as service
-nanobot daemon status    # Check status
-nanobot daemon logs      # View logs
+gigabot daemon install   # Install as service
+gigabot daemon status    # Check status
+gigabot daemon logs      # View logs
 
 # Cron
-nanobot cron list        # List jobs
-nanobot cron run <id>    # Trigger manually
+gigabot cron list        # List jobs
+gigabot cron run <id>    # Trigger manually
 ```
 
 ---
 
 ## Configuration
 
-Configuration is stored in `~/.nanobot/config.yaml`:
+Configuration is stored in `~/.gigabot/config.yaml`:
 
 ```yaml
 agents:
@@ -218,7 +215,7 @@ channels:
 security:
   auth:
     mode: token  # none, token, password, tailscale
-    token: ${NANOBOT_AUTH_TOKEN}
+    token: ${GIGABOT_AUTH_TOKEN}
   
   sandbox:
     mode: non-main  # off, non-main, all
@@ -247,11 +244,11 @@ docker compose --profile whatsapp up -d
 
 ```bash
 # Install as service
-nanobot daemon install
+gigabot daemon install
 
 # Start/stop
-nanobot daemon start
-nanobot daemon stop
+gigabot daemon start
+gigabot daemon stop
 ```
 
 ### Environment Variables
@@ -301,7 +298,7 @@ ws.send(JSON.stringify({
 ### Custom Tools
 
 ```python
-from nanobot.agent.tools import Tool
+from gigabot.agent.tools import Tool
 
 class MyTool(Tool):
     @property
@@ -328,7 +325,7 @@ class MyTool(Tool):
 ### Custom Channels
 
 ```python
-from nanobot.channels.base import BaseChannel
+from gigabot.channels.base import BaseChannel
 
 class MyChannel(BaseChannel):
     name = "my_channel"
@@ -349,7 +346,7 @@ class MyChannel(BaseChannel):
 ### Webhooks
 
 ```python
-from nanobot.hooks import Hook, HookAction, get_hook_service
+from gigabot.hooks import Hook, HookAction, get_hook_service
 
 hook = Hook(
     id="my-webhook",
@@ -372,7 +369,7 @@ service.add_hook(hook)
 **Bot not responding**
 1. Check channel is enabled in config
 2. Verify API keys are set
-3. Check logs: `nanobot daemon logs`
+3. Check logs: `gigabot daemon logs`
 
 **High token usage**
 1. Enable tiered routing
@@ -388,21 +385,35 @@ service.add_hook(hook)
 
 ```bash
 # Verbose logging
-LOG_LEVEL=DEBUG nanobot gateway
+LOG_LEVEL=DEBUG gigabot gateway
 
 # Test single query
-nanobot run "test" --verbose
+gigabot run "test" --verbose
 ```
 
 ### Security Audit
 
 ```bash
 # Run all checks
-nanobot security audit
+gigabot security audit
 
 # Check specific area
-nanobot security audit --category auth
+gigabot security audit --category auth
 ```
+
+---
+
+## Acknowledgments
+
+GigaBot stands on the shoulders of giants. We gratefully acknowledge:
+
+### Nanobot by HKUDS
+
+GigaBot builds upon the foundation of **[Nanobot](https://github.com/HKUDS/nanobot)**, created by the **Hong Kong University Data Science (HKUDS)** research group. Nanobot demonstrated that powerful AI agent functionality could be achieved in an ultra-lightweight codebase (~4,000 lines).
+
+### OpenClaw
+
+Special inspiration from **[OpenClaw](https://github.com/openclaw/openclaw)** for multi-channel architecture, gateway design, and enterprise-grade security patterns.
 
 ---
 
