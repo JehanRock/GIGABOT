@@ -12,6 +12,35 @@
 
 Built with a focus on **performance**, **security**, **privacy**, and **autonomy** — GigaBot delivers powerful multi-agent capabilities while maintaining a clean, extensible codebase.
 
+## Project Status & Roadmap
+
+**Current Phase:** Phase 4 Complete (Nodes System) → Planning Phase 5 (UI/UX & Skills)
+
+### ✅ What's Been Developed
+*   **Multi-Channel Support**: Full integration with Telegram, WhatsApp, Discord, Signal, Matrix, and Slack.
+*   **Tiered Model Routing**: Intelligent routing of tasks to appropriate models (Daily Driver, Coder, Specialist) based on complexity.
+*   **Nodes System**: Remote device control protocol, Gateway pairing, Headless Host, and `ExecRouter` for distributed operations.
+*   **Team & Swarm Architecture**: Persona-based agent teams (Architect, Lead Dev, QA) and swarm patterns (Research, Code, Review).
+*   **Security Layers**: Auth tokens, policy enforcement, channel allowlists, and initial sandbox implementation.
+*   **Memory System**: Hybrid search (vector + keyword) and deep memory persistence.
+
+### 🛠 What's Been Fixed
+*   **Node Stability**: Fixed node ID comparison bugs in `host.py` and connection handling.
+*   **Code Quality**: Cleaned up unused imports in `manager.py` and `host.py`.
+*   **Security**: Added SSL/TLS verification options for node communications.
+*   **Integration**: Proper integration of `NodeManager` into the main Gateway startup flow.
+
+### 🚧 In Progress
+*   **UI/UX Overhaul**: Designing a responsive, mobile-first dashboard using TailwindCSS (Embedded) to scale across Desktop, Tablet, and Mobile.
+*   **Docker Sandbox**: Hardening the sandbox implementation for secure code execution.
+
+### 🔮 Next in Feature Set
+*   **Executable Skills**: Transforming skills from documentation into executable modules with a registry.
+*   **Observability**: Adding Prometheus metrics and Grafana dashboards for production monitoring.
+*   **Computer Use**: Investigating integration of "Claude Code" style capabilities for OS-level interaction.
+
+---
+
 ## Key Features
 
 | Feature | Description |
@@ -27,6 +56,8 @@ Built with a focus on **performance**, **security**, **privacy**, and **autonomy
 | **WebUI Dashboard** | Real-time monitoring with WebSocket streaming |
 
 ## Architecture
+
+GigaBot combines a lightweight agent core (inspired by Nanobot) with enterprise-grade services (inspired by OpenClaw).
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐

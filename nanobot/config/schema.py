@@ -176,13 +176,119 @@ class TeamConfig(BaseModel):
     min_opinions: int = 3  # Minimum opinions to gather
 
 
+class ProfilerConfig(BaseModel):
+    """Model profiler configuration for HR-style model interviews."""
+    enabled: bool = True
+    
+    # Interviewer settings
+    interviewer_model: str = "anthropic/claude-opus-4-5"  # High-reasoning model for evaluation
+    
+    # Auto-interview settings
+    auto_interview: bool = True  # Interview unknown models automatically
+    profile_max_age_days: int = 30  # Re-interview after this many days
+    quick_assess_on_failure: bool = True  # Quick re-assess after failures
+    
+    # Storage
+    storage_path: str = "~/.gigabot/profiles"  # Where to store profiles
+    
+    # Test settings
+    test_timeout: int = 30  # Timeout per test in seconds
+    quick_test_categories: list[str] = Field(default_factory=lambda: [
+        "tool_calling",
+        "instruction",
+        "reasoning",
+    ])
+    
+    # Integration settings
+    validate_role_assignments: bool = True  # Warn if model unsuited for role
+    apply_guardrails: bool = True  # Apply profile-based guardrails to prompts
+
+
+class MemoryConfig(BaseModel):
+    """Deep memory system configuration."""
+    enabled: bool = True
+    
+    # Vector search settings
+    vector_search: bool = True  # Enable semantic memory retrieval
+    context_memories: int = 5  # Number of relevant memories to include in context
+    
+    # Auto-extraction settings
+    auto_extract_facts: bool = True  # Extract and store important facts from conversations
+    save_compaction_summaries: bool = True  # Save conversation summaries to memory
+    
+    # Storage settings
+    storage_path: str = "~/.gigabot/memory"  # Where to store memory data
+    vector_dimension: int = 384  # Embedding dimension (384 for MiniLM)
+    
+    # Search weights
+    vector_weight: float = 0.6  # Weight for semantic similarity
+    keyword_weight: float = 0.3  # Weight for keyword matching
+    recency_weight: float = 0.1  # Weight for recency
+    recency_days: int = 30  # Days to consider for recency scoring
+
+
+class SelfHealConfig(BaseModel):
+    """Self-healing controls configuration."""
+    enabled: bool = True
+    
+    # Tool retry settings
+    tool_retry_enabled: bool = True
+    max_tool_retries: int = 3
+    retry_base_delay: float = 1.0  # Initial delay in seconds
+    retry_max_delay: float = 30.0  # Maximum delay
+    retry_exponential_base: float = 2.0  # Backoff multiplier
+    
+    # Circuit breaker settings
+    circuit_breaker_enabled: bool = True
+    circuit_breaker_threshold: int = 5  # Failures before opening circuit
+    circuit_breaker_cooldown: int = 300  # Seconds before reset (5 min)
+    
+    # Swarm retry settings
+    swarm_task_retry: bool = True
+    swarm_max_retries: int = 2
+    
+    # Error pattern learning
+    track_error_patterns: bool = True
+    error_pattern_threshold: int = 3  # Occurrences before flagging
+
+
+class ToolReinforcementConfig(BaseModel):
+    """Agentic tool calling reinforcement configuration."""
+    enabled: bool = True
+    
+    # Pre-execution validation
+    pre_validation: bool = True  # Validate parameters before execution
+    enforce_security_policy: bool = True  # Check tool policy before execution
+    
+    # Adaptive tool selection
+    adaptive_selection: bool = True  # Track and learn from tool usage
+    track_model_tool_performance: bool = True  # Per-model tool success rates
+    
+    # Profiler feedback
+    feedback_to_profiler: bool = True  # Update model profiles from tool calls
+    feedback_interval: int = 100  # Update profile every N calls
+    
+    # Advisor thresholds (configurable)
+    min_calls_for_confidence: int = 5  # Min calls before using actual success rate
+    default_confidence: float = 0.7  # Confidence when not enough data
+    error_warning_threshold: int = 3  # Error count before warning
+    suggest_alternative_threshold: float = 0.5  # Confidence below this suggests alternative
+    
+    # Storage
+    advisor_storage_path: str = "~/.gigabot/tool_advisor.json"
+
+
 class AgentsConfig(BaseModel):
     """Agent configuration."""
     defaults: AgentDefaults = Field(default_factory=AgentDefaults)
     tiered_routing: TieredRoutingConfig = Field(default_factory=TieredRoutingConfig)
     swarm: SwarmConfig = Field(default_factory=SwarmConfig)
     team: TeamConfig = Field(default_factory=TeamConfig)
+    profiler: ProfilerConfig = Field(default_factory=ProfilerConfig)
     dev_workflow: DevWorkflowConfig = Field(default_factory=DevWorkflowConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
+    self_heal: SelfHealConfig = Field(default_factory=SelfHealConfig)
+    tool_reinforcement: ToolReinforcementConfig = Field(default_factory=ToolReinforcementConfig)
 
 
 class ProviderConfig(BaseModel):
@@ -198,6 +304,32 @@ class ModelFallbackConfig(BaseModel):
     primary: str = ""
     fallbacks: list[str] = Field(default_factory=list)
     cooldown_seconds: int = 300  # Time before retrying failed provider
+
+
+class LLMGatewayConfig(BaseModel):
+    """Individual LLM gateway configuration for multi-gateway support."""
+    id: str = ""  # Unique identifier
+    name: str = ""  # Display name
+    provider: Literal[
+        "openrouter", "anthropic", "openai", "moonshot", 
+        "deepseek", "glm", "qwen", "ollama", "vllm"
+    ] = "openrouter"
+    api_key: str = ""
+    api_base: str | None = None
+    enabled: bool = False
+    is_primary: bool = False
+    is_fallback: bool = False
+    priority: int = 0  # Lower = higher priority for fallbacks
+    health_status: Literal["healthy", "unhealthy", "unknown"] = "unknown"
+    last_error: str | None = None
+    failure_count: int = 0
+
+
+class LLMGatewaysConfig(BaseModel):
+    """Multi-gateway configuration with fallback support."""
+    gateways: list[LLMGatewayConfig] = Field(default_factory=list)
+    cooldown_seconds: int = 300  # Time before retrying failed gateway
+    max_retries: int = 3  # Max retries per gateway before moving to next
 
 
 class ProvidersConfig(BaseModel):
@@ -225,6 +357,9 @@ class ProvidersConfig(BaseModel):
     
     # Model failover configuration
     failover: ModelFallbackConfig = Field(default_factory=ModelFallbackConfig)
+    
+    # Multi-gateway configuration with fallback
+    gateways: LLMGatewaysConfig = Field(default_factory=LLMGatewaysConfig)
 
 
 class GatewayConfig(BaseModel):
@@ -241,10 +376,16 @@ class AuthConfig(BaseModel):
     """Authentication configuration."""
     mode: Literal["none", "token", "password", "tailscale"] = "none"
     token: str = ""  # For token mode
-    password_hash: str = ""  # SHA-256 hash for password mode
+    password_hash: str = ""  # SHA-256 hash for password mode (with salt)
+    password_salt: str = ""  # Salt for password hashing
+    pin_hash: str = ""  # SHA-256 hash for PIN (with salt)
+    pin_salt: str = ""  # Salt for PIN hashing
+    require_pin: bool = True  # Require PIN after password (two-factor)
+    session_duration_days: int = 7  # Cookie session duration
     tailscale_required_user: str = ""  # For tailscale mode
     paired_devices: list[str] = Field(default_factory=list)
     require_pairing: bool = False
+    setup_complete: bool = False  # True once password/PIN initially configured
 
 
 class ToolPolicyConfig(BaseModel):
@@ -319,6 +460,28 @@ class TokenTrackingConfig(BaseModel):
     alert_threshold: float = 0.8  # Alert at 80% of budget
 
 
+class NodesConfig(BaseModel):
+    """Node system configuration for remote command execution."""
+    enabled: bool = False  # Enable node system
+    auth_token: str = ""  # Token for node authentication
+    auto_approve: bool = False  # Auto-approve new nodes
+    ping_interval: int = 30  # Seconds between health check pings
+    storage_path: str = "~/.gigabot/nodes.json"  # Node registry storage
+
+
+class ExecConfig(BaseModel):
+    """Exec tool configuration with node routing."""
+    host: Literal["local", "node"] = "local"  # Default execution host
+    node: str = ""  # Default node ID or name for remote execution
+    fallback_to_local: bool = True  # Fallback to local if node unavailable
+    timeout: int = 60  # Default timeout in seconds
+    
+    # Node-local exec approvals (when running as node host)
+    allow_by_default: bool = False  # Allow commands not in allowlist
+    use_default_safe: bool = True  # Include default safe command patterns
+    use_default_deny: bool = True  # Include default dangerous command patterns
+
+
 class Config(BaseSettings):
     """Root configuration for nanobot/GigaBot."""
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
@@ -329,6 +492,8 @@ class Config(BaseSettings):
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
     tracking: TokenTrackingConfig = Field(default_factory=TokenTrackingConfig)
+    nodes: NodesConfig = Field(default_factory=NodesConfig)
+    exec: ExecConfig = Field(default_factory=ExecConfig)
     
     @property
     def workspace_path(self) -> Path:
@@ -339,27 +504,51 @@ class Config(BaseSettings):
         """
         Get API key for a specific provider or in priority order.
         
+        Checks both config and environment variables.
+        
         Args:
             provider: Specific provider name, or None for auto-detect.
         
         Returns:
             API key string or None.
         """
+        import os
+        
+        # Map of provider names to environment variable names
+        env_vars = {
+            "openrouter": "OPENROUTER_API_KEY",
+            "anthropic": "ANTHROPIC_API_KEY",
+            "openai": "OPENAI_API_KEY",
+            "moonshot": "MOONSHOT_API_KEY",
+            "deepseek": "DEEPSEEK_API_KEY",
+            "glm": "GLM_API_KEY",
+            "qwen": "QWEN_API_KEY",
+        }
+        
         if provider:
             provider_config = getattr(self.providers, provider, None)
-            if provider_config:
-                return provider_config.api_key or None
+            if provider_config and provider_config.api_key:
+                return provider_config.api_key
+            # Check environment variable
+            env_var = env_vars.get(provider, "")
+            if env_var:
+                return os.environ.get(env_var) or None
+            return None
         
         # Priority order: OpenRouter > Anthropic > OpenAI > Moonshot > DeepSeek > vLLM
-        return (
-            self.providers.openrouter.api_key or
-            self.providers.anthropic.api_key or
-            self.providers.openai.api_key or
-            self.providers.moonshot.api_key or
-            self.providers.deepseek.api_key or
-            self.providers.vllm.api_key or
-            None
-        )
+        # Check config first, then environment variables
+        for prov, env_var in env_vars.items():
+            provider_config = getattr(self.providers, prov, None)
+            if provider_config and provider_config.api_key:
+                return provider_config.api_key
+            if os.environ.get(env_var):
+                return os.environ.get(env_var)
+        
+        # Check vLLM last (no env var typically)
+        if self.providers.vllm.api_key:
+            return self.providers.vllm.api_key
+        
+        return None
     
     def get_api_base(self, provider: str | None = None) -> str | None:
         """

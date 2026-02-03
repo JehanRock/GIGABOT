@@ -1,5 +1,6 @@
 # GigaBot Docker Compose
 # Usage: docker compose up -d
+# Dashboard: http://localhost:18790/
 
 services:
   gigabot:
@@ -9,38 +10,40 @@ services:
     
     ports:
       - "18790:18790"
-      - "18791:18791"
     
     volumes:
-      # Configuration - mount your config directory
+      # Configuration directory
       - ./config:/root/.nanobot
-      # Workspace - agent's working directory
+      # Workspace - agent's working directory  
       - ./workspace:/root/.nanobot/workspace
     
     environment:
-      # LLM Provider API Keys (add the ones you use)
+      # LLM Provider API Keys (at least one required)
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - MOONSHOT_API_KEY=${MOONSHOT_API_KEY:-}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
       
-      # Channel Tokens
+      # Channel Tokens (optional)
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
       - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:-}
       - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN:-}
       - SLACK_APP_TOKEN=${SLACK_APP_TOKEN:-}
       
-      # Security
-      - NANOBOT_SECURITY__AUTH__MODE=${NANOBOT_AUTH_MODE:-none}
-      - NANOBOT_SECURITY__AUTH__TOKEN=${NANOBOT_AUTH_TOKEN:-}
+      # Web Search (optional)
+      - BRAVE_API_KEY=${BRAVE_API_KEY:-}
+      
+      # Security (optional)
+      - NANOBOT_AUTH_MODE=${NANOBOT_AUTH_MODE:-none}
+      - NANOBOT_AUTH_TOKEN=${NANOBOT_AUTH_TOKEN:-}
     
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:18790/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 5s
+      start_period: 15s
     
     logging:
       driver: "json-file"
@@ -48,7 +51,7 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # Optional: WhatsApp Bridge (if using WhatsApp channel)
+  # Optional: WhatsApp Bridge (enable with --profile whatsapp)
   whatsapp-bridge:
     image: node:20-slim
     container_name: gigabot-whatsapp

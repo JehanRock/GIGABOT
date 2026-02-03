@@ -54,6 +54,20 @@ class ProviderHealth:
         return time.time() >= self.cooldown_until
 
 
+@dataclass
+class GatewayInfo:
+    """Runtime information about a configured gateway."""
+    id: str
+    name: str
+    provider: str
+    api_key: str
+    api_base: str | None
+    is_primary: bool
+    is_fallback: bool
+    priority: int
+    health: ProviderHealth = field(default_factory=ProviderHealth)
+
+
 class LiteLLMProvider(LLMProvider):
     """
     LLM provider using LiteLLM for multi-provider support.
@@ -121,14 +135,24 @@ class LiteLLMProvider(LLMProvider):
         default_model: str = "anthropic/claude-opus-4-5",
         fallback_models: list[str] | None = None,
         cooldown_seconds: int = 300,
+        gateways_config: Any | None = None,  # LLMGatewaysConfig
     ):
         super().__init__(api_key, api_base)
         self.default_model = default_model
         self.fallback_models = fallback_models or []
         self.cooldown_seconds = cooldown_seconds
         
-        # Health tracking
+        # Health tracking (per model)
         self._model_health: dict[str, ProviderHealth] = {}
+        
+        # Gateway tracking (for multi-gateway support)
+        self._gateways: list[GatewayInfo] = []
+        self._gateway_cooldown = cooldown_seconds
+        self._gateway_max_retries = 3
+        
+        # Initialize gateways from config
+        if gateways_config:
+            self._init_gateways(gateways_config)
         
         # Usage tracking
         self._total_tokens = 0
@@ -144,6 +168,48 @@ class LiteLLMProvider(LLMProvider):
         
         # Disable LiteLLM logging noise
         litellm.suppress_debug_info = True
+    
+    def _init_gateways(self, gateways_config: Any) -> None:
+        """Initialize gateways from configuration."""
+        self._gateway_cooldown = gateways_config.cooldown_seconds
+        self._gateway_max_retries = gateways_config.max_retries
+        
+        for gw in gateways_config.gateways:
+            if gw.enabled:
+                self._gateways.append(GatewayInfo(
+                    id=gw.id,
+                    name=gw.name,
+                    provider=gw.provider,
+                    api_key=gw.api_key,
+                    api_base=gw.api_base,
+                    is_primary=gw.is_primary,
+                    is_fallback=gw.is_fallback,
+                    priority=gw.priority,
+                    health=ProviderHealth(),
+                ))
+        
+        # Sort gateways: primary first, then by priority
+        self._gateways.sort(key=lambda g: (not g.is_primary, g.priority))
+    
+    def _get_ordered_gateways(self) -> list[GatewayInfo]:
+        """Get gateways in order: primary first, then fallbacks by priority."""
+        # Primary gateway first
+        primary = [g for g in self._gateways if g.is_primary and g.health.is_available()]
+        
+        # Then fallback gateways by priority
+        fallbacks = sorted(
+            [g for g in self._gateways if g.is_fallback and not g.is_primary and g.health.is_available()],
+            key=lambda g: g.priority
+        )
+        
+        return primary + fallbacks
+    
+    def _get_gateway_by_id(self, gateway_id: str) -> GatewayInfo | None:
+        """Get a gateway by ID."""
+        for gw in self._gateways:
+            if gw.id == gateway_id:
+                return gw
+        return None
     
     def _detect_provider(
         self, 
@@ -259,6 +325,11 @@ class LiteLLMProvider(LLMProvider):
         """
         Send a chat completion request via LiteLLM with failover support.
         
+        Supports both gateway-level and model-level fallback:
+        - If gateways are configured, tries each gateway in order (primary first, then fallbacks)
+        - Within each gateway, uses the configured model
+        - Falls back to model-level fallback if no gateways configured
+        
         Args:
             messages: List of message dicts with 'role' and 'content'.
             tools: Optional list of tool definitions in OpenAI format.
@@ -270,13 +341,46 @@ class LiteLLMProvider(LLMProvider):
             LLMResponse with content and/or tool calls.
         """
         model = model or self.default_model
+        last_error = ""
         
+        # Try gateway-level fallback first if gateways are configured
+        if self._gateways:
+            ordered_gateways = self._get_ordered_gateways()
+            
+            for gateway in ordered_gateways:
+                try:
+                    response = await self._call_model_with_gateway(
+                        gateway, model, messages, tools, max_tokens, temperature
+                    )
+                    
+                    # Success - mark healthy and return
+                    gateway.health.mark_success()
+                    self._request_count += 1
+                    
+                    # Track usage
+                    if response.usage:
+                        self._total_tokens += response.usage.get("total_tokens", 0)
+                        self._prompt_tokens += response.usage.get("prompt_tokens", 0)
+                        self._completion_tokens += response.usage.get("completion_tokens", 0)
+                    
+                    return response
+                    
+                except Exception as e:
+                    last_error = str(e)
+                    gateway.health.mark_failed(last_error, self._gateway_cooldown)
+                    continue
+            
+            # All gateways failed
+            return LLMResponse(
+                content=f"Error: All gateways failed. Last error: {last_error}",
+                finish_reason="error",
+            )
+        
+        # Fall back to model-level failover (original behavior)
         # Build list of models to try (primary + fallbacks)
         models_to_try = [model] + [
             fb for fb in self.fallback_models if fb != model
         ]
-        
-        last_error = ""
         
         for try_model in models_to_try:
             health = self._get_model_health(try_model)
@@ -312,6 +416,66 @@ class LiteLLMProvider(LLMProvider):
             content=f"Error: All models failed. Last error: {last_error}",
             finish_reason="error",
         )
+    
+    async def _call_model_with_gateway(
+        self,
+        gateway: GatewayInfo,
+        model: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        max_tokens: int,
+        temperature: float,
+    ) -> LLMResponse:
+        """Make an API call using a specific gateway."""
+        # Determine the model to use based on gateway provider
+        formatted_model = self._format_model_for_gateway(model, gateway)
+        
+        # Get API base from gateway or default for provider
+        api_base = gateway.api_base or self.PROVIDER_CONFIGS.get(gateway.provider, {}).get("api_base")
+        
+        kwargs: dict[str, Any] = {
+            "model": formatted_model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "api_key": gateway.api_key,
+        }
+        
+        if api_base:
+            kwargs["api_base"] = api_base
+        
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
+        
+        response = await acompletion(**kwargs)
+        return self._parse_response(response)
+    
+    def _format_model_for_gateway(self, model: str, gateway: GatewayInfo) -> str:
+        """Format model name for a specific gateway."""
+        provider = gateway.provider
+        config = self.PROVIDER_CONFIGS.get(provider, {})
+        
+        # Apply prefix based on gateway provider
+        prefix = config.get("prefix", "")
+        
+        # Special handling for OpenRouter - always use openrouter/ prefix
+        if provider == "openrouter":
+            if not model.startswith("openrouter/"):
+                return f"openrouter/{model}"
+            return model
+        
+        # For OpenAI-compatible providers
+        if prefix and provider in ["moonshot", "glm", "qwen"]:
+            # Strip any existing provider prefix and use openai/
+            model_name = model.split("/")[-1] if "/" in model else model
+            return f"openai/{model_name}"
+        
+        # For DeepSeek, Ollama, etc.
+        if prefix and not model.startswith(prefix) and "/" not in model:
+            return f"{prefix}{model}"
+        
+        return model
     
     async def _call_model(
         self,
@@ -385,7 +549,7 @@ class LiteLLMProvider(LLMProvider):
     
     def get_usage_stats(self) -> dict[str, Any]:
         """Get usage statistics."""
-        return {
+        stats = {
             "total_tokens": self._total_tokens,
             "prompt_tokens": self._prompt_tokens,
             "completion_tokens": self._completion_tokens,
@@ -400,6 +564,102 @@ class LiteLLMProvider(LLMProvider):
                 for model, health in self._model_health.items()
             },
         }
+        
+        # Include gateway health if configured
+        if self._gateways:
+            stats["gateway_health"] = {
+                gw.id: {
+                    "name": gw.name,
+                    "provider": gw.provider,
+                    "is_primary": gw.is_primary,
+                    "is_fallback": gw.is_fallback,
+                    "healthy": gw.health.healthy,
+                    "failure_count": gw.health.failure_count,
+                    "available": gw.health.is_available(),
+                    "last_error": gw.health.last_error,
+                }
+                for gw in self._gateways
+            }
+        
+        return stats
+    
+    def get_gateway_status(self) -> list[dict[str, Any]]:
+        """Get status of all configured gateways."""
+        return [
+            {
+                "id": gw.id,
+                "name": gw.name,
+                "provider": gw.provider,
+                "is_primary": gw.is_primary,
+                "is_fallback": gw.is_fallback,
+                "priority": gw.priority,
+                "health_status": "healthy" if gw.health.healthy else "unhealthy",
+                "available": gw.health.is_available(),
+                "failure_count": gw.health.failure_count,
+                "last_error": gw.health.last_error,
+            }
+            for gw in self._gateways
+        ]
+    
+    def add_gateway(
+        self,
+        id: str,
+        name: str,
+        provider: str,
+        api_key: str,
+        api_base: str | None = None,
+        is_primary: bool = False,
+        is_fallback: bool = False,
+        priority: int = 0,
+    ) -> None:
+        """Add a gateway at runtime."""
+        # If setting as primary, unset any existing primary
+        if is_primary:
+            for gw in self._gateways:
+                gw.is_primary = False
+        
+        self._gateways.append(GatewayInfo(
+            id=id,
+            name=name,
+            provider=provider,
+            api_key=api_key,
+            api_base=api_base,
+            is_primary=is_primary,
+            is_fallback=is_fallback,
+            priority=priority,
+            health=ProviderHealth(),
+        ))
+        
+        # Re-sort gateways
+        self._gateways.sort(key=lambda g: (not g.is_primary, g.priority))
+    
+    def remove_gateway(self, gateway_id: str) -> bool:
+        """Remove a gateway at runtime."""
+        for i, gw in enumerate(self._gateways):
+            if gw.id == gateway_id:
+                del self._gateways[i]
+                return True
+        return False
+    
+    def update_gateway(self, gateway_id: str, **kwargs) -> bool:
+        """Update a gateway's configuration."""
+        gw = self._get_gateway_by_id(gateway_id)
+        if not gw:
+            return False
+        
+        # If setting as primary, unset any existing primary
+        if kwargs.get("is_primary") and not gw.is_primary:
+            for g in self._gateways:
+                g.is_primary = False
+        
+        # Update fields
+        for key, value in kwargs.items():
+            if hasattr(gw, key):
+                setattr(gw, key, value)
+        
+        # Re-sort gateways
+        self._gateways.sort(key=lambda g: (not g.is_primary, g.priority))
+        return True
     
     def reset_usage_stats(self) -> None:
         """Reset usage statistics."""

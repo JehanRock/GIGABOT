@@ -21,24 +21,24 @@ WORKDIR /app
 # Copy project files
 COPY pyproject.toml .
 COPY nanobot/ nanobot/
+COPY bridge/ bridge/
 
 # Install GigaBot
-RUN pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir .
 
-# Install optional dependencies
-RUN pip install --no-cache-dir aiohttp numpy
+# Install optional dependencies for full functionality
+RUN pip install --no-cache-dir aiohttp numpy tiktoken
 
-# Create config directory
-RUN mkdir -p /root/.nanobot/workspace
+# Create config and workspace directories
+RUN mkdir -p /root/.nanobot/workspace /root/.nanobot/memory
 
 # Expose ports
-# 18790: HTTP/WebSocket API
-# 18791: Alternative port (not used by default)
-EXPOSE 18790 18791
+# 18790: HTTP/WebSocket API (Dashboard, Chat, Nodes)
+EXPOSE 18790
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:18790/health || exit 1
 
-# Run GigaBot
-CMD ["nanobot", "gateway"]
+# Run GigaBot gateway (both gigabot and nanobot commands work)
+CMD ["gigabot", "gateway", "--port", "18790"]

@@ -55,6 +55,7 @@ class TaskResult:
     error: str = ""
     execution_time: float = 0.0
     worker_id: str = ""
+    retry_count: int = 0
 
 
 class SwarmOrchestrator:
@@ -204,10 +205,11 @@ Return ONLY the JSON array, no other text."""
         return []
     
     async def _execute_tasks(self, tasks: list[SwarmTask]) -> list[TaskResult]:
-        """Execute tasks respecting dependencies using worker pool."""
+        """Execute tasks respecting dependencies using worker pool with retry support."""
         results = []
         completed = set()
         pending = {t.id: t for t in tasks}
+        retry_counts: dict[str, int] = {t.id: 0 for t in tasks}
         
         while pending:
             # Find tasks with satisfied dependencies
@@ -224,7 +226,7 @@ Return ONLY the JSON array, no other text."""
             # Execute ready tasks in parallel (up to max_workers)
             batch = ready[:self.config.max_workers]
             batch_results = await asyncio.gather(
-                *[self._execute_single_task(t) for t in batch],
+                *[self._execute_single_task(t, retry_counts.get(t.id, 0)) for t in batch],
                 return_exceptions=True
             )
             
@@ -235,8 +237,27 @@ Return ONLY the JSON array, no other text."""
                         success=False,
                         result="",
                         error=str(result),
+                        retry_count=retry_counts.get(task.id, 0),
                     )
                 
+                # Check if we should retry failed tasks
+                if not result.success and self.config.retry_failed:
+                    current_retries = retry_counts.get(task.id, 0)
+                    
+                    if current_retries < self.config.max_retries:
+                        # Check if error is transient (worth retrying)
+                        if self._is_transient_error(result.error):
+                            retry_counts[task.id] = current_retries + 1
+                            logger.info(
+                                f"Retrying task '{task.id}' (attempt {current_retries + 2}/{self.config.max_retries + 1}): "
+                                f"{result.error[:100]}"
+                            )
+                            # Don't mark as completed - will be retried in next iteration
+                            await asyncio.sleep(1.0 * (current_retries + 1))  # Backoff
+                            continue
+                
+                # Task completed (success or no more retries)
+                result.retry_count = retry_counts.get(task.id, 0)
                 results.append(result)
                 completed.add(task.id)
                 del pending[task.id]
@@ -246,7 +267,31 @@ Return ONLY the JSON array, no other text."""
         
         return results
     
-    async def _execute_single_task(self, task: SwarmTask) -> TaskResult:
+    def _is_transient_error(self, error: str) -> bool:
+        """Check if an error is transient and worth retrying."""
+        error_lower = error.lower()
+        
+        # Transient error patterns
+        transient_patterns = [
+            "timeout", "timed out", "connection", "network",
+            "temporary", "unavailable", "retry", "rate limit",
+            "no worker available", "busy",
+        ]
+        
+        # Permanent error patterns (don't retry)
+        permanent_patterns = [
+            "not found", "invalid", "missing required",
+            "permission denied", "unauthorized", "forbidden",
+        ]
+        
+        # Check permanent first
+        if any(p in error_lower for p in permanent_patterns):
+            return False
+        
+        # Then check transient
+        return any(p in error_lower for p in transient_patterns)
+    
+    async def _execute_single_task(self, task: SwarmTask, retry_count: int = 0) -> TaskResult:
         """Execute a single task using a worker from the pool."""
         start_time = time.time()
         
@@ -263,6 +308,12 @@ Return ONLY the JSON array, no other text."""
             elif any(kw in desc_lower for kw in ["review", "analyze", "critique"]):
                 specialization = "review"
         
+        # On retry, try to get a different worker if possible
+        preferred_worker = None
+        if retry_count > 0:
+            # Try to avoid the same worker that failed
+            specialization = ""  # Reset to get any available worker
+        
         worker = await self._worker_pool.get_worker(specialization=specialization)
         
         if not worker:
@@ -272,6 +323,7 @@ Return ONLY the JSON array, no other text."""
                 result="",
                 error="No worker available",
                 execution_time=time.time() - start_time,
+                retry_count=retry_count,
             )
         
         # Build context from dependencies
@@ -282,6 +334,7 @@ Return ONLY the JSON array, no other text."""
                 dep_context += f"\nResult from {dep_id}: {dep_result.result[:500]}"
         
         # Execute using worker
+        retry_note = f"\n\n(Note: This is retry attempt {retry_count + 1})" if retry_count > 0 else ""
         task_prompt = f"""Task: {task.description}
 
 Instructions:
@@ -289,7 +342,7 @@ Instructions:
 
 {f"Context from previous tasks:{dep_context}" if dep_context else ""}
 
-Provide a clear, actionable result."""
+Provide a clear, actionable result.{retry_note}"""
 
         self._running_tasks.add(task.id)
         
@@ -306,6 +359,7 @@ Provide a clear, actionable result."""
                 error="" if success else result,
                 execution_time=time.time() - start_time,
                 worker_id=worker.config.id,
+                retry_count=retry_count,
             )
             
         except asyncio.TimeoutError:
@@ -316,6 +370,7 @@ Provide a clear, actionable result."""
                 error="Task timed out",
                 execution_time=time.time() - start_time,
                 worker_id=worker.config.id,
+                retry_count=retry_count,
             )
         except Exception as e:
             return TaskResult(
@@ -325,6 +380,7 @@ Provide a clear, actionable result."""
                 error=str(e),
                 execution_time=time.time() - start_time,
                 worker_id=worker.config.id if worker else "",
+                retry_count=retry_count,
             )
         finally:
             self._running_tasks.discard(task.id)
@@ -399,6 +455,7 @@ class TeamOrchestrator:
     - Mandatory QA gate on all outputs
     - Optional Auditor review for sensitive tasks
     - Deliberation mode for complex decisions
+    - Profile-aware model selection via ModelRegistry
     
     Supports two modes:
     - "execute" (default): Assign and complete tasks ("Get this done")
@@ -410,6 +467,7 @@ class TeamOrchestrator:
         provider: Any,  # LLMProvider
         workspace: Path,
         config: Any = None,  # TeamConfig
+        model_registry: Any = None,  # ModelRegistry
     ):
         """
         Initialize the team orchestrator.
@@ -418,6 +476,7 @@ class TeamOrchestrator:
             provider: LLM provider for API calls.
             workspace: Workspace path.
             config: Optional TeamConfig for customization.
+            model_registry: Optional ModelRegistry for profile-aware assignment.
         """
         from nanobot.swarm.team import AgentTeam
         from nanobot.swarm.quality_gate import QualityGate, MultiStageGate
@@ -426,12 +485,14 @@ class TeamOrchestrator:
         self.provider = provider
         self.workspace = workspace
         self.config = config
+        self.model_registry = model_registry
         
-        # Initialize the team
+        # Initialize the team with model registry
         self.team = AgentTeam(
             provider=provider,
             workspace=workspace,
             config=config,
+            model_registry=model_registry,
         )
         
         # Initialize quality gate

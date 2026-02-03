@@ -19,6 +19,7 @@ from nanobot.swarm.roles import AgentRole
 
 if TYPE_CHECKING:
     from nanobot.providers.base import LLMProvider
+    from nanobot.profiler.profile import ModelProfile
 
 
 class ReviewVerdict(str, Enum):
@@ -74,6 +75,7 @@ class TeamAgent:
     - Maintains conversation context within session
     - Can review other agents' work
     - Reports to hierarchy
+    - Applies profile-based guardrails
     """
     
     def __init__(
@@ -81,6 +83,7 @@ class TeamAgent:
         role: AgentRole,
         provider: "LLMProvider",
         workspace: Path | None = None,
+        profile: "ModelProfile | None" = None,
     ):
         """
         Initialize a team agent.
@@ -89,10 +92,12 @@ class TeamAgent:
             role: The agent's role definition.
             provider: LLM provider for API calls.
             workspace: Optional workspace path.
+            profile: Optional model profile for guardrails.
         """
         self.role = role
         self.provider = provider
         self.workspace = workspace
+        self.profile = profile
         
         # Session context (conversation history within a session)
         self._context: list[dict[str, str]] = []
@@ -101,6 +106,8 @@ class TeamAgent:
         self._task_count = 0
         self._success_count = 0
         self._total_time = 0.0
+        self._tool_call_successes = 0
+        self._tool_call_failures = 0
     
     @property
     def id(self) -> str:
@@ -139,9 +146,16 @@ class TeamAgent:
         start_time = time.time()
         self._task_count += 1
         
+        # Build system prompt with guardrails if profile available
+        system_prompt = self.role.get_system_prompt()
+        if self.profile:
+            guardrail_prompt = self.profile.get_guardrail_prompt()
+            if guardrail_prompt:
+                system_prompt = f"{system_prompt}\n\n--- GUARDRAILS ---\n{guardrail_prompt}"
+        
         # Build messages
         messages = [
-            {"role": "system", "content": self.role.get_system_prompt()}
+            {"role": "system", "content": system_prompt}
         ]
         
         # Add session history if requested
@@ -161,19 +175,30 @@ class TeamAgent:
             "content": task
         })
         
+        # Determine temperature from profile if available
+        temperature = self.role.temperature
+        if self.profile and self.profile.guardrails.recommended_temperature is not None:
+            temperature = self.profile.guardrails.recommended_temperature
+        
         try:
             response = await asyncio.wait_for(
                 self.provider.chat(
                     messages=messages,
                     model=self.role.model,
                     max_tokens=self.role.max_tokens,
-                    temperature=self.role.temperature,
+                    temperature=temperature,
                     tools=tools,
                 ),
                 timeout=120,  # 2 minute timeout
             )
             
             content = response.content or ""
+            
+            # Track tool call success/failure
+            tool_calls_made = bool(response.tool_calls)
+            if tool_calls_made:
+                # Consider it a success if we got tool calls without error
+                self._tool_call_successes += 1
             
             # Update context
             self._context.append({"role": "user", "content": task})
@@ -193,6 +218,11 @@ class TeamAgent:
                 content=content,
                 success=True,
                 execution_time=execution_time,
+                metadata={
+                    "model": self.role.model,
+                    "has_profile": self.profile is not None,
+                    "tool_calls_made": tool_calls_made,
+                },
             )
             
         except asyncio.TimeoutError:
@@ -208,6 +238,8 @@ class TeamAgent:
             
         except Exception as e:
             logger.error(f"Agent {self.role.id} error: {e}")
+            if tools:
+                self._tool_call_failures += 1
             return AgentResponse(
                 role_id=self.role.id,
                 role_title=self.role.title,
@@ -473,6 +505,7 @@ Provide a clear, concise opinion with:
     
     def get_stats(self) -> dict[str, Any]:
         """Get agent statistics."""
+        total_tool_calls = self._tool_call_successes + self._tool_call_failures
         return {
             "id": self.role.id,
             "title": self.role.title,
@@ -482,6 +515,10 @@ Provide a clear, concise opinion with:
             "success_rate": self._success_count / max(self._task_count, 1),
             "average_time": self._total_time / max(self._task_count, 1),
             "authority_level": self.role.authority_level,
+            "tool_call_successes": self._tool_call_successes,
+            "tool_call_failures": self._tool_call_failures,
+            "tool_accuracy": self._tool_call_successes / max(total_tool_calls, 1),
+            "has_profile": self.profile is not None,
         }
     
     def reset_stats(self) -> None:
@@ -489,3 +526,9 @@ Provide a clear, concise opinion with:
         self._task_count = 0
         self._success_count = 0
         self._total_time = 0.0
+        self._tool_call_successes = 0
+        self._tool_call_failures = 0
+    
+    def set_profile(self, profile: "ModelProfile | None") -> None:
+        """Set or update the model profile."""
+        self.profile = profile

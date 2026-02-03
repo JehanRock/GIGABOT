@@ -154,6 +154,7 @@ This file stores important information that should persist across sessions.
 
 @app.command()
 def gateway(
+    host: str = typer.Option("0.0.0.0", "--host", "-H", help="Host to bind to"),
     port: int = typer.Option(18790, "--port", "-p", help="Gateway port"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
 ):
@@ -166,12 +167,14 @@ def gateway(
     from nanobot.cron.service import CronService
     from nanobot.cron.types import CronJob
     from nanobot.heartbeat.service import HeartbeatService
+    from nanobot.nodes.manager import NodeManager, set_node_manager
+    from nanobot.ui.server import UIServer
     
     if verbose:
         import logging
         logging.basicConfig(level=logging.DEBUG)
     
-    console.print(f"{__logo__} Starting GigaBot gateway on port {port}...")
+    console.print(f"{__logo__} Starting GigaBot gateway on {host}:{port}...")
     
     config = load_config()
     
@@ -182,31 +185,36 @@ def gateway(
     api_key = config.get_api_key()
     api_base = config.get_api_base()
     
-    if not api_key:
-        console.print("[red]Error: No API key configured.[/red]")
-        console.print("Set one in ~/.nanobot/config.json under providers.openrouter.apiKey")
-        raise typer.Exit(1)
+    provider = None
+    if api_key:
+        provider = LiteLLMProvider(
+            api_key=api_key,
+            api_base=api_base,
+            default_model=config.agents.defaults.model
+        )
+        console.print(f"[green]✓[/green] LLM provider configured")
+    else:
+        console.print("[yellow]Warning: No API key configured - chat disabled[/yellow]")
+        console.print("  Add OPENROUTER_API_KEY or ANTHROPIC_API_KEY to .env")
     
-    provider = LiteLLMProvider(
-        api_key=api_key,
-        api_base=api_base,
-        default_model=config.agents.defaults.model
-    )
-    
-    # Create agent with tiered routing and swarm support
-    agent = AgentLoop(
-        bus=bus,
-        provider=provider,
-        workspace=config.workspace_path,
-        model=config.agents.defaults.model,
-        config=config,  # Pass config for tiered routing and swarm
-        max_iterations=config.agents.defaults.max_tool_iterations,
-        brave_api_key=config.tools.web.search.api_key or None
-    )
+    # Create agent with tiered routing and swarm support (if provider available)
+    agent = None
+    if provider:
+        agent = AgentLoop(
+            bus=bus,
+            provider=provider,
+            workspace=config.workspace_path,
+            model=config.agents.defaults.model,
+            config=config,  # Pass config for tiered routing and swarm
+            max_iterations=config.agents.defaults.max_tool_iterations,
+            brave_api_key=config.tools.web.search.api_key or None
+        )
     
     # Create cron service
     async def on_cron_job(job: CronJob) -> str | None:
         """Execute a cron job through the agent."""
+        if not agent:
+            return "Agent not configured - no API key"
         response = await agent.process_direct(
             job.payload.message,
             session_key=f"cron:{job.id}"
@@ -227,43 +235,102 @@ def gateway(
     # Create heartbeat service
     async def on_heartbeat(prompt: str) -> str:
         """Execute heartbeat through the agent."""
+        if not agent:
+            return "Agent not configured"
         return await agent.process_direct(prompt, session_key="heartbeat")
     
     heartbeat = HeartbeatService(
         workspace=config.workspace_path,
         on_heartbeat=on_heartbeat,
         interval_s=30 * 60,  # 30 minutes
-        enabled=True
+        enabled=bool(agent)  # Only enable if agent is configured
     )
     
     # Create channel manager
     channels = ChannelManager(config, bus)
     
+    # Create node manager if enabled
+    node_manager: NodeManager | None = None
+    if config.nodes.enabled:
+        storage_path = Path(config.nodes.storage_path).expanduser()
+        node_manager = NodeManager(
+            storage_path=storage_path,
+            auth_token=config.nodes.auth_token,
+            auto_approve=config.nodes.auto_approve,
+            ping_interval=config.nodes.ping_interval,
+        )
+        set_node_manager(node_manager)
+        console.print(f"[green]✓[/green] Nodes system enabled")
+    
+    # Create UI server
+    ui_server = UIServer(
+        host=host,
+        port=port,
+        config=config,
+        node_manager=node_manager,
+    )
+    
+    # Set up chat handler
+    async def handle_chat(message: str, session_id: str) -> str:
+        if not agent:
+            return "Chat is disabled - no API key configured. Add OPENROUTER_API_KEY or ANTHROPIC_API_KEY to your .env file and restart."
+        return await agent.process_direct(message, session_id)
+    
+    ui_server.set_chat_handler(handle_chat)
+    
     if channels.enabled_channels:
         console.print(f"[green]✓[/green] Channels enabled: {', '.join(channels.enabled_channels)}")
     else:
-        console.print("[yellow]Warning: No channels enabled[/yellow]")
+        console.print("[yellow]Info: No chat channels enabled (use dashboard for chat)[/yellow]")
     
     cron_status = cron.status()
     if cron_status["jobs"] > 0:
         console.print(f"[green]✓[/green] Cron: {cron_status['jobs']} scheduled jobs")
     
     console.print(f"[green]✓[/green] Heartbeat: every 30m")
+    console.print(f"[green]✓[/green] Dashboard: http://{host}:{port}/")
     
     async def run():
         try:
+            # Start UI server
+            await ui_server.start()
+            
             await cron.start()
-            await heartbeat.start()
-            await asyncio.gather(
-                agent.run(),
-                channels.start_all(),
-            )
+            if agent:
+                await heartbeat.start()
+            
+            # Start node manager if enabled
+            if node_manager:
+                await node_manager.start()
+            
+            # Start channels (this returns quickly if none enabled)
+            asyncio.create_task(channels.start_all())
+            
+            # Start agent if available
+            if agent:
+                asyncio.create_task(agent.run())
+            
+            # Keep the server running
+            console.print("\n[green]GigaBot is running. Press Ctrl+C to stop.[/green]\n")
+            while True:
+                await asyncio.sleep(1)
+                    
         except KeyboardInterrupt:
             console.print("\nShutting down...")
-            heartbeat.stop()
+        except asyncio.CancelledError:
+            pass
+        finally:
+            if agent:
+                heartbeat.stop()
             cron.stop()
-            agent.stop()
+            if agent:
+                agent.stop()
             await channels.stop_all()
+            await ui_server.stop()
+            
+            # Stop node manager
+            if node_manager:
+                await node_manager.stop()
     
     asyncio.run(run())
 
@@ -1380,6 +1447,305 @@ def get_done(
 
 
 # ============================================================================
+# Profile Commands (Model Profiler / HR Interview System)
+# ============================================================================
+
+profile_app = typer.Typer(help="Model profiler - HR-style model interviews")
+app.add_typer(profile_app, name="profile")
+
+
+@profile_app.command("interview")
+def profile_interview(
+    model: str = typer.Argument(..., help="Model to interview (e.g., anthropic/claude-sonnet-4-5)"),
+    quick: bool = typer.Option(False, "--quick", "-q", help="Quick assessment (subset of tests)"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed progress"),
+):
+    """Interview a model to create a capability profile."""
+    from nanobot.config.loader import load_config
+    from nanobot.providers.litellm_provider import LiteLLMProvider
+    from nanobot.profiler.interviewer import ModelInterviewer
+    from nanobot.profiler.registry import ModelRegistry
+    
+    config = load_config()
+    
+    api_key = config.get_api_key()
+    api_base = config.get_api_base()
+    
+    if not api_key:
+        console.print("[red]Error: No API key configured.[/red]")
+        raise typer.Exit(1)
+    
+    provider = LiteLLMProvider(
+        api_key=api_key,
+        api_base=api_base,
+        default_model=config.agents.defaults.model
+    )
+    
+    interviewer_model = config.agents.profiler.interviewer_model
+    storage_path = Path(config.agents.profiler.storage_path).expanduser()
+    
+    interviewer = ModelInterviewer(
+        provider=provider,
+        interviewer_model=interviewer_model,
+        workspace=config.workspace_path,
+    )
+    
+    registry = ModelRegistry(storage_path=storage_path)
+    
+    console.print(f"\n{__logo__} [bold]Model Profiler - Interview Session[/bold]")
+    console.print(f"  Candidate: [cyan]{model}[/cyan]")
+    console.print(f"  Interviewer: {interviewer_model}")
+    console.print("")
+    
+    def progress_callback(current: int, total: int, test_name: str):
+        if verbose:
+            console.print(f"  [{current}/{total}] {test_name}...")
+    
+    async def run_interview():
+        if quick:
+            return await interviewer.quick_assessment(model, progress_callback)
+        return await interviewer.interview(model, progress_callback=progress_callback)
+    
+    console.print("Running tests...\n")
+    profile = asyncio.run(run_interview())
+    
+    # Save profile
+    registry.save_profile(profile)
+    
+    # Display results
+    console.print(profile.format_summary())
+    console.print(f"\n[green]✓[/green] Profile saved to {storage_path / 'models.json'}")
+
+
+@profile_app.command("assess")
+def profile_assess(
+    model: str = typer.Argument(..., help="Model to assess"),
+):
+    """Quick assessment of a model (subset of critical tests)."""
+    # Delegate to interview with --quick flag
+    profile_interview(model=model, quick=True, verbose=False)
+
+
+@profile_app.command("show")
+def profile_show(
+    model: str = typer.Argument(..., help="Model ID to show"),
+):
+    """Show a model's capability profile."""
+    from nanobot.config.loader import load_config
+    from nanobot.profiler.registry import ModelRegistry
+    
+    config = load_config()
+    storage_path = Path(config.agents.profiler.storage_path).expanduser()
+    registry = ModelRegistry(storage_path=storage_path)
+    
+    profile = registry.get_profile(model)
+    
+    if not profile:
+        console.print(f"[red]No profile found for: {model}[/red]")
+        console.print(f"\nRun: gigabot profile interview {model}")
+        raise typer.Exit(1)
+    
+    console.print(f"\n{__logo__} {profile.format_summary()}")
+    
+    # Show guardrail recommendations
+    console.print("\n[bold]Guardrail Recommendations:[/bold]")
+    g = profile.guardrails
+    console.print(f"  Needs structured output: {'Yes' if g.needs_structured_output else 'No'}")
+    console.print(f"  Needs explicit format: {'Yes' if g.needs_explicit_format else 'No'}")
+    console.print(f"  Needs tool examples: {'Yes' if g.needs_tool_examples else 'No'}")
+    console.print(f"  Needs step-by-step: {'Yes' if g.needs_step_by_step else 'No'}")
+    console.print(f"  Avoid parallel tools: {'Yes' if g.avoid_parallel_tools else 'No'}")
+    console.print(f"  Max reliable context: {g.max_reliable_context:,} tokens")
+    console.print(f"  Recommended temperature: {g.recommended_temperature}")
+    console.print(f"  Tool retry limit: {g.tool_call_retry_limit}")
+
+
+@profile_app.command("list")
+def profile_list():
+    """List all profiled models."""
+    from nanobot.config.loader import load_config
+    from nanobot.profiler.registry import ModelRegistry
+    
+    config = load_config()
+    storage_path = Path(config.agents.profiler.storage_path).expanduser()
+    registry = ModelRegistry(storage_path=storage_path)
+    
+    profiles = registry.get_all_profiles()
+    
+    if not profiles:
+        console.print("[dim]No profiled models yet.[/dim]")
+        console.print("\nRun: gigabot profile interview <model-id>")
+        return
+    
+    console.print(f"\n{__logo__} [bold]Profiled Models[/bold]\n")
+    
+    table = Table()
+    table.add_column("Model", style="cyan")
+    table.add_column("Overall", style="green")
+    table.add_column("Tool", style="yellow")
+    table.add_column("Code", style="blue")
+    table.add_column("Reasoning", style="magenta")
+    table.add_column("Interviewed", style="dim")
+    
+    for model_id, profile in profiles.items():
+        caps = profile.capabilities
+        table.add_row(
+            model_id,
+            f"{profile.get_overall_score():.2f}",
+            f"{caps.tool_calling_accuracy:.2f}",
+            f"{caps.code_generation:.2f}",
+            f"{caps.reasoning_depth:.2f}",
+            profile.interviewed_at.strftime("%Y-%m-%d"),
+        )
+    
+    console.print(table)
+
+
+@profile_app.command("recommend")
+def profile_recommend(
+    role: str = typer.Option(None, "--role", "-r", help="Role to get recommendations for"),
+    task: str = typer.Option(None, "--task", "-t", help="Task type to get recommendations for"),
+    top: int = typer.Option(5, "--top", "-n", help="Number of recommendations"),
+):
+    """Get model recommendations for a role or task."""
+    from nanobot.config.loader import load_config
+    from nanobot.profiler.registry import ModelRegistry
+    
+    config = load_config()
+    storage_path = Path(config.agents.profiler.storage_path).expanduser()
+    registry = ModelRegistry(storage_path=storage_path)
+    
+    if not role and not task:
+        console.print("[red]Error: Specify --role or --task[/red]")
+        raise typer.Exit(1)
+    
+    console.print(f"\n{__logo__} [bold]Model Recommendations[/bold]\n")
+    
+    if role:
+        console.print(f"For role: [cyan]{role}[/cyan]\n")
+        recommendations = registry.get_role_recommendations(role, top_n=top)
+        
+        if not recommendations:
+            console.print("[dim]No profiled models available.[/dim]")
+            return
+        
+        table = Table()
+        table.add_column("Model", style="cyan")
+        table.add_column("Suitability", style="green")
+        table.add_column("Reasoning")
+        
+        for model_id, score, reasoning in recommendations:
+            indicator = "✓" if score >= 0.7 else "~" if score >= 0.5 else "✗"
+            table.add_row(
+                model_id,
+                f"{indicator} {score:.2f}",
+                reasoning[:50] + "..." if len(reasoning) > 50 else reasoning,
+            )
+        
+        console.print(table)
+    
+    if task:
+        console.print(f"For task type: [cyan]{task}[/cyan]\n")
+        
+        best = registry.get_best_model_for_task(task)
+        if best:
+            console.print(f"[green]Recommended:[/green] {best}")
+        else:
+            console.print("[dim]No suitable model found for this task type.[/dim]")
+
+
+@profile_app.command("compare")
+def profile_compare(
+    models: list[str] = typer.Argument(..., help="Models to compare (space-separated)"),
+):
+    """Compare multiple models side by side."""
+    from nanobot.config.loader import load_config
+    from nanobot.profiler.registry import ModelRegistry
+    
+    config = load_config()
+    storage_path = Path(config.agents.profiler.storage_path).expanduser()
+    registry = ModelRegistry(storage_path=storage_path)
+    
+    # Check all models have profiles
+    missing = [m for m in models if not registry.get_profile(m)]
+    if missing:
+        console.print(f"[red]Missing profiles for: {', '.join(missing)}[/red]")
+        console.print("\nRun 'gigabot profile interview <model>' first.")
+        raise typer.Exit(1)
+    
+    console.print(f"\n{__logo__} [bold]Model Comparison[/bold]\n")
+    comparison = registry.format_comparison(models)
+    console.print(comparison)
+
+
+@profile_app.command("refresh")
+def profile_refresh(
+    max_age: int = typer.Option(30, "--max-age", help="Max profile age in days"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Just show what would be refreshed"),
+):
+    """Re-interview stale profiles."""
+    from nanobot.config.loader import load_config
+    from nanobot.profiler.registry import ModelRegistry
+    
+    config = load_config()
+    storage_path = Path(config.agents.profiler.storage_path).expanduser()
+    registry = ModelRegistry(storage_path=storage_path)
+    
+    stale = registry.get_stale_profiles(max_age_days=max_age)
+    
+    if not stale:
+        console.print("[green]All profiles are up to date.[/green]")
+        return
+    
+    console.print(f"\n{__logo__} [bold]Stale Profiles (>{max_age} days)[/bold]\n")
+    
+    for model_id in stale:
+        profile = registry.get_profile(model_id)
+        age = (profile.interviewed_at.now() - profile.interviewed_at).days if profile else 0
+        console.print(f"  [cyan]{model_id}[/cyan] ({age} days old)")
+    
+    if dry_run:
+        console.print(f"\n[dim]Run without --dry-run to re-interview these models.[/dim]")
+        return
+    
+    # Re-interview each
+    from nanobot.providers.litellm_provider import LiteLLMProvider
+    from nanobot.profiler.interviewer import ModelInterviewer
+    
+    api_key = config.get_api_key()
+    api_base = config.get_api_base()
+    
+    if not api_key:
+        console.print("[red]Error: No API key configured.[/red]")
+        raise typer.Exit(1)
+    
+    provider = LiteLLMProvider(
+        api_key=api_key,
+        api_base=api_base,
+        default_model=config.agents.defaults.model
+    )
+    
+    interviewer = ModelInterviewer(
+        provider=provider,
+        interviewer_model=config.agents.profiler.interviewer_model,
+        workspace=config.workspace_path,
+    )
+    
+    async def refresh_all():
+        for model_id in stale:
+            console.print(f"\n  Re-interviewing {model_id}...")
+            try:
+                profile = await interviewer.quick_assessment(model_id)
+                registry.save_profile(profile)
+                console.print(f"    [green]✓[/green] Updated (score: {profile.get_overall_score():.2f})")
+            except Exception as e:
+                console.print(f"    [red]✗[/red] Failed: {e}")
+    
+    asyncio.run(refresh_all())
+    console.print("\n[green]Refresh complete.[/green]")
+
+
+# ============================================================================
 # Daemon Commands
 # ============================================================================
 
@@ -1498,6 +1864,763 @@ def daemon_logs(
         console.print(logs)
     else:
         console.print("[dim]No logs available[/dim]")
+
+
+# ============================================================================
+# Memory Commands
+# ============================================================================
+
+memory_app = typer.Typer(help="Deep memory system management")
+app.add_typer(memory_app, name="memory")
+
+
+@memory_app.command("status")
+def memory_status():
+    """Show memory system status."""
+    from nanobot.config.loader import load_config
+    
+    config = load_config()
+    workspace = config.workspace_path
+    
+    console.print("\n[bold]Memory System Status[/bold]")
+    console.print(f"  Enabled: {'yes' if config.agents.memory.enabled else 'no'}")
+    console.print(f"  Vector search: {'yes' if config.agents.memory.vector_search else 'no'}")
+    console.print(f"  Context memories: {config.agents.memory.context_memories}")
+    
+    # Check memory directory
+    memory_dir = workspace / "memory"
+    if memory_dir.exists():
+        daily_files = list(memory_dir.glob("????-??-??.md"))
+        long_term_file = memory_dir / "MEMORY.md"
+        vector_file = memory_dir / "vectors.json"
+        
+        console.print(f"\n[bold]Storage[/bold]")
+        console.print(f"  Daily notes: {len(daily_files)} files")
+        console.print(f"  Long-term memory: {'exists' if long_term_file.exists() else 'not created'}")
+        console.print(f"  Vector index: {'exists' if vector_file.exists() else 'not created'}")
+        
+        # Show recent memories
+        if daily_files:
+            recent = sorted(daily_files, reverse=True)[:3]
+            console.print(f"\n[bold]Recent Daily Notes[/bold]")
+            for f in recent:
+                console.print(f"  - {f.stem}")
+    else:
+        console.print(f"\n[dim]Memory directory not created yet[/dim]")
+
+
+@memory_app.command("search")
+def memory_search(
+    query: str = typer.Argument(..., help="Search query"),
+    top_k: int = typer.Option(5, "-k", "--top-k", help="Number of results"),
+):
+    """Search memories semantically."""
+    from nanobot.config.loader import load_config
+    from nanobot.memory.search import search_memories
+    
+    config = load_config()
+    workspace = config.workspace_path
+    
+    console.print(f"\nSearching for: [bold]{query}[/bold]\n")
+    
+    try:
+        results = search_memories(
+            query=query,
+            workspace=workspace,
+            k=top_k,
+            vector_weight=config.agents.memory.vector_weight,
+        )
+        
+        if not results:
+            console.print("[dim]No relevant memories found[/dim]")
+            return
+        
+        console.print(f"Found {len(results)} relevant memories:\n")
+        
+        for i, result in enumerate(results, 1):
+            source = result.entry.source.replace("_", " ").title()
+            console.print(f"[bold]{i}. [{source}][/bold] (score: {result.combined_score:.2f})")
+            
+            # Show score breakdown
+            console.print(f"   Vector: {result.vector_score:.2f} | Keyword: {result.keyword_score:.2f} | Recency: {result.recency_score:.2f}")
+            
+            # Show content preview
+            content = result.entry.content[:200].replace("\n", " ")
+            console.print(f"   {content}...")
+            console.print()
+            
+    except Exception as e:
+        console.print(f"[red]Search failed: {e}[/red]")
+
+
+@memory_app.command("reindex")
+def memory_reindex():
+    """Rebuild the vector index for all memories."""
+    from nanobot.config.loader import load_config
+    from nanobot.agent.context import ContextBuilder
+    
+    config = load_config()
+    workspace = config.workspace_path
+    
+    console.print("Reindexing memories...")
+    
+    try:
+        context = ContextBuilder(
+            workspace=workspace,
+            enable_vector_search=True,
+        )
+        
+        count = context.reindex_memories()
+        console.print(f"[green]✓[/green] Indexed {count} memory entries")
+        
+    except Exception as e:
+        console.print(f"[red]Reindex failed: {e}[/red]")
+
+
+@memory_app.command("stats")
+def memory_stats():
+    """Show memory statistics."""
+    from nanobot.config.loader import load_config
+    from nanobot.memory.store import MemoryStore
+    
+    config = load_config()
+    workspace = config.workspace_path
+    
+    try:
+        store = MemoryStore(workspace)
+        entries = store.get_all_entries()
+        
+        console.print("\n[bold]Memory Statistics[/bold]\n")
+        console.print(f"  Total entries: {len(entries)}")
+        
+        # Count by source
+        sources: dict[str, int] = {}
+        for entry in entries:
+            sources[entry.source] = sources.get(entry.source, 0) + 1
+        
+        console.print("\n[bold]By Source[/bold]")
+        for source, count in sorted(sources.items()):
+            console.print(f"  {source}: {count}")
+        
+        # Show total content size
+        total_chars = sum(len(e.content) for e in entries)
+        console.print(f"\n  Total content: ~{total_chars // 1000}k characters")
+        
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+
+
+# ============================================================================
+# Tool Health Commands
+# ============================================================================
+
+tools_app = typer.Typer(help="Tool health and self-heal management")
+app.add_typer(tools_app, name="tools")
+
+
+@tools_app.command("health")
+def tools_health():
+    """Show tool health and circuit breaker status."""
+    from nanobot.config.loader import load_config
+    from nanobot.agent.tool_manager import ToolCallManager, RetryConfig, CircuitBreakerConfig
+    from nanobot.agent.tools.registry import ToolRegistry
+    
+    config = load_config()
+    
+    console.print("\n[bold]Self-Heal Configuration[/bold]")
+    console.print(f"  Tool retry: {'enabled' if config.agents.self_heal.tool_retry_enabled else 'disabled'}")
+    console.print(f"  Max retries: {config.agents.self_heal.max_tool_retries}")
+    console.print(f"  Circuit breaker: {'enabled' if config.agents.self_heal.circuit_breaker_enabled else 'disabled'}")
+    console.print(f"  Threshold: {config.agents.self_heal.circuit_breaker_threshold} failures")
+    console.print(f"  Cooldown: {config.agents.self_heal.circuit_breaker_cooldown}s")
+    
+    # Show registered tools
+    registry = ToolRegistry()
+    # Register default tools to show what's available
+    from nanobot.agent.tools.filesystem import ReadFileTool, WriteFileTool, EditFileTool, ListDirTool
+    from nanobot.agent.tools.shell import ExecTool
+    from nanobot.agent.tools.web import WebSearchTool, WebFetchTool
+    
+    registry.register(ReadFileTool())
+    registry.register(WriteFileTool())
+    registry.register(EditFileTool())
+    registry.register(ListDirTool())
+    registry.register(ExecTool())
+    registry.register(WebSearchTool())
+    registry.register(WebFetchTool())
+    
+    console.print(f"\n[bold]Registered Tools[/bold]")
+    for name in sorted(registry.tool_names):
+        console.print(f"  - {name}")
+
+
+@tools_app.command("advisor-status")
+def tools_advisor_status():
+    """Show tool advisor statistics."""
+    from nanobot.config.loader import load_config
+    from nanobot.agent.tool_advisor import ToolAdvisor
+    from pathlib import Path
+    
+    config = load_config()
+    storage_path = Path(config.agents.tool_reinforcement.advisor_storage_path).expanduser()
+    
+    advisor = ToolAdvisor(storage_path=storage_path)
+    summary = advisor.get_summary()
+    
+    console.print("\n[bold]Tool Advisor Statistics[/bold]")
+    console.print(f"  Tracked combinations: {summary['total_combinations']}")
+    console.print(f"  Unique models: {summary['unique_models']}")
+    console.print(f"  Unique tools: {summary['unique_tools']}")
+    console.print(f"  Total calls: {summary['total_calls']}")
+    console.print(f"  Overall success rate: {summary['overall_success_rate']:.1%}")
+    
+    # Show problematic combinations
+    problematic = advisor.get_problematic_combinations(min_calls=5, max_success_rate=0.5)
+    
+    if problematic:
+        console.print("\n[bold yellow]Problematic Combinations[/bold yellow]")
+        for model_id, tool_name, success_rate, calls in problematic[:5]:
+            console.print(f"  {model_id} + {tool_name}: {success_rate:.1%} ({calls} calls)")
+
+
+@tools_app.command("leaderboard")
+def tools_leaderboard(
+    tool: str = typer.Argument(..., help="Tool name to show leaderboard for"),
+    top_n: int = typer.Option(5, "-n", help="Number of top models to show"),
+):
+    """Show best models for a specific tool."""
+    from nanobot.config.loader import load_config
+    from nanobot.agent.tool_advisor import ToolAdvisor
+    from pathlib import Path
+    
+    config = load_config()
+    storage_path = Path(config.agents.tool_reinforcement.advisor_storage_path).expanduser()
+    
+    advisor = ToolAdvisor(storage_path=storage_path)
+    leaderboard = advisor.get_tool_leaderboard(tool, top_n=top_n)
+    
+    if not leaderboard:
+        console.print(f"[dim]No data for tool '{tool}'[/dim]")
+        return
+    
+    console.print(f"\n[bold]Top Models for '{tool}'[/bold]\n")
+    
+    for i, (model_id, success_rate, total_calls) in enumerate(leaderboard, 1):
+        bar = "█" * int(success_rate * 10) + "░" * (10 - int(success_rate * 10))
+        console.print(f"  {i}. {model_id}")
+        console.print(f"     {bar} {success_rate:.1%} ({total_calls} calls)")
+
+
+@tools_app.command("reset-circuits")
+def tools_reset_circuits():
+    """Reset all circuit breakers."""
+    from nanobot.config.loader import load_config
+    from nanobot.agent.tool_manager import ToolCallManager
+    from nanobot.agent.tools.registry import ToolRegistry
+    
+    console.print("Resetting circuit breakers...")
+    
+    # Note: This would need to connect to a running agent
+    # For now, just show a message
+    console.print("[yellow]Note: Circuit breakers are per-session.[/yellow]")
+    console.print("To reset, restart the agent or use the API.")
+
+
+# ============================================================================
+# Node Commands (Gateway-side node management)
+# ============================================================================
+
+nodes_app = typer.Typer(help="Manage connected nodes for remote execution")
+app.add_typer(nodes_app, name="nodes")
+
+
+@nodes_app.command("list")
+def nodes_list(
+    connected: bool = typer.Option(False, "--connected", "-c", help="Only show connected nodes"),
+):
+    """List all registered nodes."""
+    from nanobot.config.loader import load_config
+    from nanobot.nodes.manager import NodeManager
+    from nanobot.nodes.protocol import NodeStatus
+    
+    config = load_config()
+    
+    if not config.nodes.enabled:
+        console.print("[yellow]Warning: Nodes not enabled in config[/yellow]")
+        console.print("Set nodes.enabled = true in config to use nodes")
+    
+    storage_path = Path(config.nodes.storage_path).expanduser()
+    manager = NodeManager(storage_path=storage_path)
+    
+    nodes = manager.list_nodes(connected_only=connected)
+    
+    if not nodes:
+        console.print("[dim]No nodes registered[/dim]")
+        return
+    
+    table = Table(title="Registered Nodes")
+    table.add_column("ID", style="cyan")
+    table.add_column("Name", style="green")
+    table.add_column("Status")
+    table.add_column("Platform")
+    table.add_column("IP Address")
+    table.add_column("Last Seen", style="dim")
+    
+    for node in nodes:
+        status_color = {
+            NodeStatus.CONNECTED: "green",
+            NodeStatus.PAIRED: "yellow",
+            NodeStatus.PENDING: "blue",
+            NodeStatus.DISCONNECTED: "dim",
+        }.get(node.status, "white")
+        
+        status_str = f"[{status_color}]{node.status.value}[/{status_color}]"
+        
+        last_seen = ""
+        if node.last_seen:
+            last_seen = node.last_seen.strftime("%Y-%m-%d %H:%M")
+        
+        table.add_row(
+            node.id[:8] + "...",
+            node.display_name,
+            status_str,
+            node.platform,
+            node.ip_address,
+            last_seen,
+        )
+    
+    console.print(table)
+
+
+@nodes_app.command("pending")
+def nodes_pending():
+    """Show nodes pending approval."""
+    from nanobot.config.loader import load_config
+    from nanobot.nodes.manager import NodeManager
+    
+    config = load_config()
+    storage_path = Path(config.nodes.storage_path).expanduser()
+    manager = NodeManager(storage_path=storage_path)
+    
+    pending = manager.list_pending()
+    
+    if not pending:
+        console.print("[dim]No pending approval requests[/dim]")
+        return
+    
+    table = Table(title="Pending Approval Requests")
+    table.add_column("ID", style="cyan")
+    table.add_column("Name")
+    table.add_column("Platform")
+    table.add_column("IP Address")
+    table.add_column("Capabilities", style="dim")
+    
+    for node in pending:
+        caps = ", ".join(node.get_capability_names()[:3])
+        table.add_row(
+            node.id[:8] + "...",
+            node.display_name,
+            node.platform,
+            node.ip_address,
+            caps,
+        )
+    
+    console.print(table)
+    console.print("\nUse 'gigabot nodes approve <id>' to approve")
+
+
+@nodes_app.command("approve")
+def nodes_approve(
+    node_id: str = typer.Argument(..., help="Node ID (or prefix) to approve"),
+):
+    """Approve a pending node."""
+    from nanobot.config.loader import load_config
+    from nanobot.nodes.manager import NodeManager
+    
+    config = load_config()
+    storage_path = Path(config.nodes.storage_path).expanduser()
+    manager = NodeManager(storage_path=storage_path)
+    
+    # Find node by ID or prefix
+    node = manager.get_node(node_id)
+    if not node:
+        # Try prefix match
+        for n in manager.list_nodes():
+            if n.id.startswith(node_id):
+                node = n
+                break
+    
+    if not node:
+        console.print(f"[red]Node not found: {node_id}[/red]")
+        raise typer.Exit(1)
+    
+    async def _approve():
+        return await manager.approve_node(node.id)
+    
+    if asyncio.run(_approve()):
+        console.print(f"[green]✓[/green] Approved node: {node.display_name} ({node.id[:8]}...)")
+    else:
+        console.print(f"[red]Failed to approve node[/red]")
+
+
+@nodes_app.command("reject")
+def nodes_reject(
+    node_id: str = typer.Argument(..., help="Node ID (or prefix) to reject"),
+    reason: str = typer.Option("Rejected by admin", help="Reason for rejection"),
+):
+    """Reject a pending node."""
+    from nanobot.config.loader import load_config
+    from nanobot.nodes.manager import NodeManager
+    
+    config = load_config()
+    storage_path = Path(config.nodes.storage_path).expanduser()
+    manager = NodeManager(storage_path=storage_path)
+    
+    # Find node by ID or prefix
+    node = manager.get_node(node_id)
+    if not node:
+        for n in manager.list_nodes():
+            if n.id.startswith(node_id):
+                node = n
+                break
+    
+    if not node:
+        console.print(f"[red]Node not found: {node_id}[/red]")
+        raise typer.Exit(1)
+    
+    async def _reject():
+        return await manager.reject_node(node.id, reason)
+    
+    if asyncio.run(_reject()):
+        console.print(f"[green]✓[/green] Rejected node: {node.display_name}")
+    else:
+        console.print(f"[red]Failed to reject node[/red]")
+
+
+@nodes_app.command("status")
+def nodes_status():
+    """Show detailed node status."""
+    from nanobot.config.loader import load_config
+    from nanobot.nodes.manager import NodeManager
+    from nanobot.nodes.protocol import NodeStatus
+    
+    config = load_config()
+    
+    console.print(f"\n[bold]Nodes System Status[/bold]")
+    console.print(f"  Enabled: {'yes' if config.nodes.enabled else 'no'}")
+    console.print(f"  Auth token: {'set' if config.nodes.auth_token else 'not set'}")
+    console.print(f"  Auto-approve: {'yes' if config.nodes.auto_approve else 'no'}")
+    console.print(f"  Ping interval: {config.nodes.ping_interval}s")
+    
+    storage_path = Path(config.nodes.storage_path).expanduser()
+    manager = NodeManager(storage_path=storage_path)
+    
+    nodes = manager.list_nodes()
+    
+    console.print(f"\n[bold]Node Summary[/bold]")
+    console.print(f"  Total nodes: {len(nodes)}")
+    
+    by_status = {}
+    for node in nodes:
+        by_status[node.status] = by_status.get(node.status, 0) + 1
+    
+    for status, count in by_status.items():
+        console.print(f"  {status.value}: {count}")
+
+
+@nodes_app.command("invoke")
+def nodes_invoke(
+    node: str = typer.Option(..., "--node", "-n", help="Node ID or name"),
+    command: str = typer.Option(..., "--command", "-c", help="Command to invoke (e.g., system.run)"),
+    params: str = typer.Option("{}", "--params", "-p", help="JSON parameters"),
+    timeout: int = typer.Option(30, "--timeout", "-t", help="Timeout in seconds"),
+):
+    """Invoke a command on a node."""
+    import json as json_module
+    from nanobot.config.loader import load_config
+    from nanobot.nodes.manager import NodeManager
+    
+    config = load_config()
+    storage_path = Path(config.nodes.storage_path).expanduser()
+    manager = NodeManager(storage_path=storage_path)
+    
+    # Find node
+    node_info = manager.get_node(node)
+    if not node_info:
+        node_info = manager.get_node_by_name(node)
+    if not node_info:
+        for n in manager.list_nodes():
+            if n.id.startswith(node):
+                node_info = n
+                break
+    
+    if not node_info:
+        console.print(f"[red]Node not found: {node}[/red]")
+        raise typer.Exit(1)
+    
+    try:
+        params_dict = json_module.loads(params)
+    except json_module.JSONDecodeError as e:
+        console.print(f"[red]Invalid JSON params: {e}[/red]")
+        raise typer.Exit(1)
+    
+    console.print(f"Invoking [cyan]{command}[/cyan] on [green]{node_info.display_name}[/green]...")
+    
+    async def _invoke():
+        return await manager.invoke(
+            node_id=node_info.id,
+            command=command,
+            params=params_dict,
+            timeout_ms=timeout * 1000,
+        )
+    
+    result = asyncio.run(_invoke())
+    
+    if result.success:
+        console.print(f"\n[green]✓[/green] Success ({result.duration_ms:.0f}ms)")
+        console.print(f"\n{result.result}")
+    else:
+        console.print(f"\n[red]✗[/red] Failed: {result.error}")
+        if result.error_code:
+            console.print(f"  Error code: {result.error_code}")
+
+
+@nodes_app.command("run")
+def nodes_run(
+    command: str = typer.Argument(..., help="Shell command to run"),
+    node: str = typer.Option(None, "--node", "-n", help="Node ID or name (uses default if not specified)"),
+    cwd: str = typer.Option(None, "--cwd", help="Working directory"),
+    timeout: int = typer.Option(60, "--timeout", "-t", help="Timeout in seconds"),
+):
+    """Run a shell command on a node (shorthand for invoke system.run)."""
+    import json as json_module
+    from nanobot.config.loader import load_config
+    from nanobot.nodes.manager import NodeManager
+    
+    config = load_config()
+    storage_path = Path(config.nodes.storage_path).expanduser()
+    manager = NodeManager(storage_path=storage_path)
+    
+    # Find target node
+    if node:
+        node_info = manager.get_node(node)
+        if not node_info:
+            node_info = manager.get_node_by_name(node)
+        if not node_info:
+            for n in manager.list_nodes():
+                if n.id.startswith(node):
+                    node_info = n
+                    break
+    else:
+        node_info = manager.get_default_node()
+    
+    if not node_info:
+        console.print(f"[red]No node available[/red]")
+        raise typer.Exit(1)
+    
+    params = {"command": command}
+    if cwd:
+        params["cwd"] = cwd
+    params["timeout"] = timeout
+    
+    console.print(f"Running on [green]{node_info.display_name}[/green]: {command[:50]}...")
+    
+    async def _invoke():
+        return await manager.invoke(
+            node_id=node_info.id,
+            command="system.run",
+            params=params,
+            timeout_ms=timeout * 1000,
+        )
+    
+    result = asyncio.run(_invoke())
+    
+    if result.success:
+        result_data = result.result or {}
+        stdout = result_data.get("stdout", "")
+        stderr = result_data.get("stderr", "")
+        exit_code = result_data.get("exit_code", 0)
+        
+        if stdout:
+            console.print(stdout)
+        if stderr:
+            console.print(f"[yellow]{stderr}[/yellow]")
+        if exit_code != 0:
+            console.print(f"[dim]Exit code: {exit_code}[/dim]")
+    else:
+        console.print(f"[red]Failed: {result.error}[/red]")
+
+
+# ============================================================================
+# Node Host Commands (Run as a node host)
+# ============================================================================
+
+node_app = typer.Typer(help="Run as a node host (connect to gateway)")
+app.add_typer(node_app, name="node")
+
+
+@node_app.command("run")
+def node_run(
+    host: str = typer.Option(..., "--host", "-h", help="Gateway host address"),
+    port: int = typer.Option(18790, "--port", "-p", help="Gateway port"),
+    display_name: str = typer.Option("", "--display-name", "-n", help="Node display name"),
+    token: str = typer.Option("", "--token", "-t", help="Authentication token"),
+    tls: bool = typer.Option(False, "--tls", help="Use TLS (wss://)"),
+    no_ssl_verify: bool = typer.Option(False, "--no-ssl-verify", help="Disable SSL certificate verification"),
+    ssl_fingerprint: str = typer.Option("", "--ssl-fingerprint", help="SHA256 fingerprint for certificate pinning"),
+):
+    """Run as a node host, connecting to a gateway."""
+    from nanobot.nodes.host import run_node_host
+    
+    console.print(f"{__logo__} Starting node host...")
+    console.print(f"  Gateway: {host}:{port}")
+    console.print(f"  TLS: {'yes' if tls else 'no'}")
+    if no_ssl_verify:
+        console.print("  [yellow]SSL verification: disabled[/yellow]")
+    
+    asyncio.run(run_node_host(
+        gateway_host=host,
+        gateway_port=port,
+        token=token,
+        display_name=display_name,
+        use_tls=tls,
+        ssl_verify=not no_ssl_verify,
+        ssl_fingerprint=ssl_fingerprint,
+    ))
+
+
+@node_app.command("install")
+def node_install(
+    host: str = typer.Option(..., "--host", "-h", help="Gateway host address"),
+    port: int = typer.Option(18790, "--port", "-p", help="Gateway port"),
+    display_name: str = typer.Option("", "--display-name", "-n", help="Node display name"),
+    token: str = typer.Option("", "--token", "-t", help="Authentication token"),
+    tls: bool = typer.Option(False, "--tls", help="Use TLS (wss://)"),
+):
+    """Install node host as a system service."""
+    import json as json_module
+    
+    # Save config
+    config_path = Path.home() / ".gigabot" / "node.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    protocol = "wss" if tls else "ws"
+    gateway_url = f"{protocol}://{host}:{port}/ws/nodes"
+    
+    config_data = {
+        "gateway_url": gateway_url,
+        "token": token,
+        "display_name": display_name,
+    }
+    config_path.write_text(json_module.dumps(config_data, indent=2))
+    
+    console.print(f"[green]✓[/green] Node config saved to {config_path}")
+    console.print("\nTo install as a service, you need to:")
+    console.print("  1. Create a systemd service (Linux) or launchd plist (macOS)")
+    console.print(f"  2. Run: gigabot node run --host {host} --port {port}")
+    console.print("\nExample systemd service:")
+    console.print(f"""
+[Unit]
+Description=GigaBot Node Host
+After=network.target
+
+[Service]
+Type=simple
+User={Path.home().name}
+ExecStart=/usr/local/bin/gigabot node run --host {host} --port {port}
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+""")
+
+
+@node_app.command("status")
+def node_status():
+    """Show node host status and configuration."""
+    import json as json_module
+    
+    config_path = Path.home() / ".gigabot" / "node.json"
+    
+    console.print("\n[bold]Node Host Configuration[/bold]")
+    
+    if config_path.exists():
+        data = json_module.loads(config_path.read_text())
+        console.print(f"  Config file: {config_path}")
+        console.print(f"  Gateway URL: {data.get('gateway_url', 'not set')}")
+        console.print(f"  Display name: {data.get('display_name', 'auto')}")
+        console.print(f"  Token: {'set' if data.get('token') else 'not set'}")
+        console.print(f"  Node ID: {data.get('node_id', 'not generated')[:16]}...")
+    else:
+        console.print(f"  [dim]No config found at {config_path}[/dim]")
+    
+    # Check approvals
+    approvals_path = Path.home() / ".gigabot" / "exec-approvals.json"
+    if approvals_path.exists():
+        data = json_module.loads(approvals_path.read_text())
+        entries = data.get("entries", [])
+        console.print(f"\n[bold]Exec Approvals[/bold]")
+        console.print(f"  Entries: {len(entries)}")
+        console.print(f"  Default allow: {data.get('allow_by_default', False)}")
+    else:
+        console.print(f"\n[dim]No exec approvals configured[/dim]")
+
+
+@node_app.command("allowlist")
+def node_allowlist(
+    action: str = typer.Argument(..., help="Action: add, remove, list"),
+    pattern: str = typer.Argument(None, help="Pattern to add/remove"),
+    deny: bool = typer.Option(False, "--deny", "-d", help="Add as deny pattern (with 'add')"),
+    regex: bool = typer.Option(False, "--regex", "-r", help="Pattern is regex (with 'add')"),
+):
+    """Manage exec allowlist for this node."""
+    from nanobot.nodes.approvals import ExecApprovalManager
+    
+    manager = ExecApprovalManager()
+    
+    if action == "list":
+        entries = manager.list_entries()
+        
+        console.print("\n[bold]Exec Allowlist[/bold]")
+        console.print(f"  Default allow: {manager.allow_by_default}")
+        console.print(f"  Use default safe: {manager.use_default_safe}")
+        console.print(f"  Use default deny: {manager.use_default_deny}")
+        
+        if entries:
+            console.print("\n[bold]Custom Entries[/bold]")
+            for entry in entries:
+                entry_type = "[green]ALLOW[/green]" if entry.allow else "[red]DENY[/red]"
+                pattern_type = "(regex)" if entry.is_regex else ""
+                console.print(f"  {entry_type} {entry.pattern} {pattern_type}")
+        else:
+            console.print("\n[dim]No custom entries[/dim]")
+    
+    elif action == "add":
+        if not pattern:
+            console.print("[red]Pattern required for 'add'[/red]")
+            raise typer.Exit(1)
+        
+        if deny:
+            manager.add_deny(pattern, is_regex=regex, added_by="cli")
+            console.print(f"[green]✓[/green] Added deny pattern: {pattern}")
+        else:
+            manager.add_allow(pattern, is_regex=regex, added_by="cli")
+            console.print(f"[green]✓[/green] Added allow pattern: {pattern}")
+    
+    elif action == "remove":
+        if not pattern:
+            console.print("[red]Pattern required for 'remove'[/red]")
+            raise typer.Exit(1)
+        
+        if manager.remove(pattern):
+            console.print(f"[green]✓[/green] Removed pattern: {pattern}")
+        else:
+            console.print(f"[yellow]Pattern not found: {pattern}[/yellow]")
+    
+    else:
+        console.print(f"[red]Unknown action: {action}[/red]")
+        console.print("Use: list, add, remove")
 
 
 if __name__ == "__main__":

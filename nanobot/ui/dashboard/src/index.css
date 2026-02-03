@@ -1,0 +1,156 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+  
+  body {
+    @apply bg-giga-dark text-white;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-giga-darker;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-giga-hover rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-giga-accent;
+  }
+
+  /* Selection */
+  ::selection {
+    @apply bg-giga-accent/30;
+  }
+}
+
+@layer components {
+  /* Card component */
+  .card {
+    @apply bg-giga-card rounded-xl p-4 border border-sidebar-border;
+  }
+
+  /* Button variants */
+  .btn {
+    @apply px-4 py-2 rounded-lg font-medium transition-all duration-200;
+    @apply focus:outline-none focus:ring-2 focus:ring-giga-accent focus:ring-offset-2 focus:ring-offset-giga-dark;
+  }
+
+  .btn-primary {
+    @apply btn bg-giga-accent hover:bg-giga-accent-hover text-white;
+  }
+
+  .btn-secondary {
+    @apply btn bg-giga-card hover:bg-giga-hover text-gray-200;
+  }
+
+  .btn-ghost {
+    @apply btn bg-transparent hover:bg-giga-hover text-gray-300;
+  }
+
+  /* Input fields */
+  .input {
+    @apply w-full px-4 py-2 bg-giga-darker border border-sidebar-border rounded-lg;
+    @apply text-white placeholder-gray-500;
+    @apply focus:outline-none focus:border-giga-accent focus:ring-1 focus:ring-giga-accent;
+    @apply transition-colors duration-200;
+  }
+
+  /* Status dot */
+  .status-dot {
+    @apply w-2.5 h-2.5 rounded-full;
+  }
+
+  .status-dot-online {
+    @apply status-dot bg-giga-success;
+  }
+
+  .status-dot-offline {
+    @apply status-dot bg-gray-500;
+  }
+
+  .status-dot-busy {
+    @apply status-dot bg-giga-warning animate-pulse-dot;
+  }
+
+  /* Message bubbles */
+  .message-bubble {
+    @apply max-w-[80%] px-4 py-2 rounded-2xl;
+  }
+
+  .message-bubble-user {
+    @apply message-bubble bg-giga-accent text-white ml-auto rounded-br-md;
+  }
+
+  .message-bubble-bot {
+    @apply message-bubble bg-giga-card text-gray-100 mr-auto rounded-bl-md;
+  }
+
+  /* Badge */
+  .badge {
+    @apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium;
+  }
+
+  .badge-primary {
+    @apply badge bg-giga-accent/20 text-giga-accent;
+  }
+
+  .badge-success {
+    @apply badge bg-giga-success/20 text-giga-success;
+  }
+
+  .badge-warning {
+    @apply badge bg-giga-warning/20 text-giga-warning;
+  }
+
+  .badge-error {
+    @apply badge bg-giga-error/20 text-giga-error;
+  }
+
+  /* Nav item */
+  .nav-item {
+    @apply flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer;
+    @apply text-gray-400 hover:text-white hover:bg-sidebar-hover;
+    @apply transition-all duration-200;
+  }
+
+  .nav-item-active {
+    @apply nav-item text-white bg-sidebar-active;
+  }
+
+  /* Channel badge */
+  .channel-icon {
+    @apply w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold;
+  }
+}
+
+@layer utilities {
+  /* Hide scrollbar but keep functionality */
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Text truncation */
+  .truncate-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+}

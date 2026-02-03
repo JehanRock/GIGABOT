@@ -1,7 +1,31 @@
 """Base class for agent tools."""
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from typing import Any
+
+
+@dataclass
+class ToolResult:
+    """Result from a tool execution."""
+    
+    success: bool
+    output: Any = None
+    error: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    
+    def to_string(self) -> str:
+        """Convert result to string for LLM consumption."""
+        if not self.success:
+            return f"Error: {self.error}"
+        
+        if isinstance(self.output, str):
+            return self.output
+        elif isinstance(self.output, dict):
+            import json
+            return json.dumps(self.output, indent=2)
+        else:
+            return str(self.output)
 
 
 class Tool(ABC):

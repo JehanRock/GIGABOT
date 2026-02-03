@@ -1,0 +1,111 @@
+{
+  "providers": {
+    "openrouter": {
+      "apiKey": "",
+      "apiBase": "https://openrouter.ai/api/v1"
+    },
+    "anthropic": {
+      "apiKey": ""
+    },
+    "openai": {
+      "apiKey": ""
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": "anthropic/claude-sonnet-4-5",
+      "maxTokens": 8192,
+      "temperature": 0.7,
+      "maxToolIterations": 10
+    },
+    "tieredRouting": {
+      "enabled": true,
+      "fallbackTier": "daily_driver",
+      "tiers": {
+        "daily_driver": {
+          "models": ["openai/gpt-4o-mini", "anthropic/claude-sonnet-4-5"],
+          "triggers": ["chat", "simple", "quick"]
+        },
+        "coder": {
+          "models": ["anthropic/claude-sonnet-4-5", "openai/gpt-4o"],
+          "triggers": ["code", "debug", "implement", "fix"]
+        },
+        "specialist": {
+          "models": ["anthropic/claude-opus-4-5", "openai/gpt-4o"],
+          "triggers": ["analyze", "research", "complex", "architect"]
+        }
+      }
+    },
+    "swarm": {
+      "enabled": true,
+      "maxWorkers": 5,
+      "workerModel": "anthropic/claude-sonnet-4-5",
+      "orchestratorModel": "anthropic/claude-sonnet-4-5"
+    },
+    "team": {
+      "enabled": true,
+      "qaGateEnabled": true,
+      "auditGateEnabled": true,
+      "auditThreshold": "sensitive"
+    },
+    "memory": {
+      "enabled": true,
+      "vectorSearch": true,
+      "contextMemories": 5
+    },
+    "selfHeal": {
+      "toolRetryEnabled": true,
+      "maxToolRetries": 3,
+      "circuitBreakerEnabled": true,
+      "circuitBreakerThreshold": 5,
+      "circuitBreakerCooldown": 60
+    }
+  },
+  "channels": {
+    "telegram": {
+      "enabled": false
+    },
+    "discord": {
+      "enabled": false
+    },
+    "whatsapp": {
+      "enabled": false
+    },
+    "signal": {
+      "enabled": false
+    },
+    "matrix": {
+      "enabled": false
+    },
+    "slack": {
+      "enabled": false
+    }
+  },
+  "nodes": {
+    "enabled": true,
+    "autoApprove": true,
+    "pingInterval": 30
+  },
+  "security": {
+    "auth": {
+      "mode": "none"
+    },
+    "toolPolicy": {
+      "allow": ["*"],
+      "deny": [],
+      "requireApproval": []
+    },
+    "sandbox": {
+      "mode": "off",
+      "workspaceAccess": "rw"
+    }
+  },
+  "tools": {
+    "web": {
+      "search": {
+        "enabled": true,
+        "apiKey": ""
+      }
+    }
+  }
+}

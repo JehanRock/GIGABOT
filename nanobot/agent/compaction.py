@@ -27,6 +27,7 @@ class CompactionResult:
     compacted_tokens: int
     messages_removed: int
     summary_added: bool
+    saved_to_memory: bool = False
 
 
 class ContextGuard:
@@ -54,6 +55,8 @@ class ContextGuard:
         preserve_recent: int = 10,
         preserve_system: bool = True,
         model: str = "",
+        save_to_memory: bool = False,
+        memory_callback: Any = None,
     ):
         """
         Initialize the context guard.
@@ -64,12 +67,16 @@ class ContextGuard:
             preserve_recent: Number of recent messages to preserve.
             preserve_system: Whether to preserve system messages.
             model: Model name for token counting (affects encoding).
+            save_to_memory: Whether to save summaries to memory.
+            memory_callback: Callback function to save to memory (signature: async fn(summary, session_id)).
         """
         self.max_tokens = max_tokens
         self.threshold = threshold
         self.preserve_recent = preserve_recent
         self.preserve_system = preserve_system
         self.model = model or self.DEFAULT_MODEL
+        self.save_to_memory = save_to_memory
+        self._memory_callback = memory_callback
         
         # Token counting stats
         self._last_count = 0
@@ -159,6 +166,7 @@ class ContextGuard:
         self,
         messages: list[dict[str, Any]],
         provider: Any,
+        session_id: str = "",
     ) -> tuple[list[dict[str, Any]], CompactionResult]:
         """
         Compact messages by summarizing older content.
@@ -166,6 +174,7 @@ class ContextGuard:
         Args:
             messages: Current message list.
             provider: LLM provider for summarization.
+            session_id: Optional session identifier for memory storage.
         
         Returns:
             Tuple of (compacted messages, result info).
@@ -207,6 +216,16 @@ class ContextGuard:
         # Generate summary of older messages
         summary = await self._generate_summary(to_summarize, provider)
         
+        # Save summary to memory if enabled
+        saved_to_memory = False
+        if summary and self.save_to_memory and self._memory_callback:
+            try:
+                await self._memory_callback(summary, session_id)
+                saved_to_memory = True
+                logger.debug(f"Saved conversation summary to memory")
+            except Exception as e:
+                logger.warning(f"Failed to save summary to memory: {e}")
+        
         # Build new message list
         new_messages = system_messages.copy()
         
@@ -232,6 +251,7 @@ class ContextGuard:
             compacted_tokens=new_count,
             messages_removed=len(to_summarize),
             summary_added=bool(summary),
+            saved_to_memory=saved_to_memory,
         )
     
     async def _generate_summary(
@@ -292,6 +312,7 @@ Provide a brief summary (max 300 words):"""
         self,
         messages: list[dict[str, Any]],
         provider: Any,
+        session_id: str = "",
     ) -> list[dict[str, Any]]:
         """
         Convenience method to compact only if needed.
@@ -299,12 +320,13 @@ Provide a brief summary (max 300 words):"""
         Args:
             messages: Current message list.
             provider: LLM provider for summarization.
+            session_id: Optional session identifier for memory storage.
         
         Returns:
             Original or compacted messages.
         """
         if self.needs_compaction(messages):
-            new_messages, _ = await self.compact(messages, provider)
+            new_messages, _ = await self.compact(messages, provider, session_id)
             return new_messages
         return messages
     
@@ -374,6 +396,8 @@ def create_context_guard(
     model: str = "",
     max_tokens: int | None = None,
     threshold: float = 0.8,
+    save_to_memory: bool = False,
+    memory_callback: Any = None,
 ) -> ContextGuard:
     """
     Create a context guard with appropriate settings for a model.
@@ -382,6 +406,8 @@ def create_context_guard(
         model: Model name.
         max_tokens: Override max tokens (auto-detected if None).
         threshold: Compaction threshold (0.0-1.0).
+        save_to_memory: Whether to save summaries to memory.
+        memory_callback: Callback function for saving to memory.
     
     Returns:
         Configured ContextGuard instance.
@@ -393,4 +419,6 @@ def create_context_guard(
         max_tokens=max_tokens,
         threshold=threshold,
         model=model,
+        save_to_memory=save_to_memory,
+        memory_callback=memory_callback,
     )

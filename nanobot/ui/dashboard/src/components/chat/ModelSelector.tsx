@@ -1,0 +1,114 @@
+import { useState, useRef, useEffect } from 'react'
+import { ChevronDown, Cpu, Check, Zap, Brain, Sparkles } from 'lucide-react'
+import { cn } from '@/lib/utils'
+
+interface Model {
+  id: string
+  name: string
+  provider: string
+  tier: 'tier1' | 'tier2' | 'tier3'
+  description: string
+}
+
+const models: Model[] = [
+  { id: 'gpt-4-turbo', name: 'GPT-4 Turbo', provider: 'OpenAI', tier: 'tier1', description: 'Most capable, best for complex tasks' },
+  { id: 'claude-3-opus', name: 'Claude 3 Opus', provider: 'Anthropic', tier: 'tier1', description: 'Excellent reasoning and analysis' },
+  { id: 'gpt-4', name: 'GPT-4', provider: 'OpenAI', tier: 'tier1', description: 'High quality, balanced performance' },
+  { id: 'claude-3-sonnet', name: 'Claude 3 Sonnet', provider: 'Anthropic', tier: 'tier2', description: 'Fast and efficient' },
+  { id: 'gpt-3.5-turbo', name: 'GPT-3.5 Turbo', provider: 'OpenAI', tier: 'tier3', description: 'Quick responses, lower cost' },
+]
+
+interface ModelSelectorProps {
+  selectedModel: string
+  onModelChange: (modelId: string) => void
+}
+
+export function ModelSelector({ selectedModel, onModelChange }: ModelSelectorProps) {
+  const [isOpen, setIsOpen] = useState(false)
+  const dropdownRef = useRef<HTMLDivElement>(null)
+
+  const selected = models.find(m => m.id === selectedModel) || models[0]
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  const getTierIcon = (tier: string) => {
+    switch (tier) {
+      case 'tier1': return <Brain size={14} className="text-purple-400" />
+      case 'tier2': return <Sparkles size={14} className="text-blue-400" />
+      case 'tier3': return <Zap size={14} className="text-green-400" />
+      default: return <Cpu size={14} />
+    }
+  }
+
+  const getTierColor = (tier: string) => {
+    switch (tier) {
+      case 'tier1': return 'bg-purple-500/20 text-purple-400 border-purple-500/30'
+      case 'tier2': return 'bg-blue-500/20 text-blue-400 border-blue-500/30'
+      case 'tier3': return 'bg-green-500/20 text-green-400 border-green-500/30'
+      default: return 'bg-gray-500/20 text-gray-400'
+    }
+  }
+
+  return (
+    <div className="relative" ref={dropdownRef}>
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className={cn(
+          'flex items-center gap-2 px-3 py-1.5 rounded-lg border transition-colors text-sm',
+          isOpen 
+            ? 'bg-giga-accent/20 border-giga-accent text-white'
+            : 'bg-giga-card border-giga-border text-gray-300 hover:border-giga-accent'
+        )}
+      >
+        {getTierIcon(selected.tier)}
+        <span className="truncate max-w-[120px]">{selected.name}</span>
+        <ChevronDown size={14} className={cn('transition-transform', isOpen && 'rotate-180')} />
+      </button>
+
+      {isOpen && (
+        <div className="absolute left-0 top-full mt-1 w-72 bg-giga-card border border-giga-border rounded-xl shadow-xl overflow-hidden z-50">
+          <div className="p-2 border-b border-giga-border">
+            <p className="text-xs text-gray-500 px-2">Select Model</p>
+          </div>
+          <div className="max-h-64 overflow-y-auto py-1">
+            {models.map((model) => (
+              <button
+                key={model.id}
+                onClick={() => {
+                  onModelChange(model.id)
+                  setIsOpen(false)
+                }}
+                className={cn(
+                  'w-full flex items-start gap-3 p-3 hover:bg-giga-hover transition-colors text-left',
+                  selectedModel === model.id && 'bg-giga-hover'
+                )}
+              >
+                <div className={cn('w-8 h-8 rounded-lg flex items-center justify-center border flex-shrink-0', getTierColor(model.tier))}>
+                  {getTierIcon(model.tier)}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm font-medium text-white">{model.name}</span>
+                    {selectedModel === model.id && (
+                      <Check size={14} className="text-giga-accent flex-shrink-0" />
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-500">{model.provider}</p>
+                  <p className="text-xs text-gray-400 mt-1">{model.description}</p>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}

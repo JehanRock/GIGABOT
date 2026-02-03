@@ -28,6 +28,10 @@ if TYPE_CHECKING:
     from nanobot.routing.router import TieredRouter
     from nanobot.swarm.orchestrator import SwarmOrchestrator, TeamOrchestrator
     from nanobot.agent.validation import VisualValidator
+    from nanobot.profiler.registry import ModelRegistry
+    from nanobot.profiler.interviewer import ModelInterviewer
+    from nanobot.agent.tool_manager import ToolCallManager
+    from nanobot.agent.tool_advisor import ToolAdvisor
 
 
 class AgentLoop:
@@ -64,7 +68,18 @@ class AgentLoop:
         self.max_iterations = max_iterations
         self.brave_api_key = brave_api_key
         
-        self.context = ContextBuilder(workspace)
+        # Initialize context builder with memory settings
+        enable_vector_search = False
+        context_memories = 5
+        if config and hasattr(config.agents, 'memory'):
+            enable_vector_search = config.agents.memory.vector_search
+            context_memories = config.agents.memory.context_memories
+        
+        self.context = ContextBuilder(
+            workspace=workspace,
+            enable_vector_search=enable_vector_search,
+            context_memories=context_memories,
+        )
         self.sessions = SessionManager(workspace)
         self.tools = ToolRegistry()
         self.subagents = SubagentManager(
@@ -75,12 +90,19 @@ class AgentLoop:
             brave_api_key=brave_api_key,
         )
         
-        # Context window guard
+        # Context window guard with memory-aware compaction
         self.context_guard: ContextGuard | None = None
         if enable_context_guard:
+            # Enable memory-aware compaction if memory is enabled
+            save_to_memory = False
+            if config and hasattr(config.agents, 'memory'):
+                save_to_memory = config.agents.memory.enabled
+            
             self.context_guard = create_context_guard(
                 model=self.default_model,
                 threshold=context_threshold,
+                save_to_memory=save_to_memory,
+                memory_callback=self._save_summary_to_memory if save_to_memory else None,
             )
         
         # Tiered routing (if enabled in config)
@@ -117,6 +139,22 @@ class AgentLoop:
                 # Lazy initialization - will be created when browser tool is available
                 logger.info("Visual validation enabled (will initialize when browser available)")
         
+        # Model Profiler registry (for profile-aware model selection)
+        self.model_registry: "ModelRegistry | None" = None
+        self.model_interviewer: "ModelInterviewer | None" = None
+        if config and config.agents.profiler.enabled:
+            from nanobot.profiler.registry import ModelRegistry
+            from nanobot.profiler.interviewer import ModelInterviewer
+            
+            storage_path = Path(config.agents.profiler.storage_path).expanduser()
+            self.model_registry = ModelRegistry(storage_path=storage_path)
+            self.model_interviewer = ModelInterviewer(
+                provider=provider,
+                interviewer_model=config.agents.profiler.interviewer_model,
+                workspace=workspace,
+            )
+            logger.info(f"Model profiler enabled, {len(self.model_registry.list_profiles())} profiles loaded")
+        
         # Team orchestrator (persona-based hierarchy)
         self.team_orchestrator: "TeamOrchestrator | None" = None
         if config and config.agents.team.enabled:
@@ -125,10 +163,68 @@ class AgentLoop:
                 provider=provider,
                 workspace=workspace,
                 config=config.agents.team,
+                model_registry=self.model_registry,  # Pass registry for profile-aware assignment
             )
             logger.info("Team orchestrator enabled with persona-based hierarchy")
         
+        # Tool call manager (self-heal controls)
+        self.tool_manager: "ToolCallManager | None" = None
+        self.tool_advisor: "ToolAdvisor | None" = None
+        if config and hasattr(config.agents, 'self_heal') and config.agents.self_heal.enabled:
+            from nanobot.agent.tool_manager import ToolCallManager, RetryConfig, CircuitBreakerConfig
+            from nanobot.agent.tool_advisor import ToolAdvisor, AdvisorConfig
+            
+            # Build retry config from settings
+            retry_config = RetryConfig(
+                max_retries=config.agents.self_heal.max_tool_retries,
+                base_delay=config.agents.self_heal.retry_base_delay,
+                max_delay=config.agents.self_heal.retry_max_delay,
+                exponential_base=config.agents.self_heal.retry_exponential_base,
+            )
+            
+            # Build circuit breaker config
+            circuit_config = CircuitBreakerConfig(
+                failure_threshold=config.agents.self_heal.circuit_breaker_threshold,
+                reset_timeout=float(config.agents.self_heal.circuit_breaker_cooldown),
+            )
+            
+            # Build tool policy if security is configured
+            tool_policy = None
+            if config.agents.tool_reinforcement.enforce_security_policy:
+                from nanobot.security.policy import create_policy_from_config
+                tool_policy = create_policy_from_config({
+                    "allow": config.security.tool_policy.allow,
+                    "deny": config.security.tool_policy.deny,
+                    "require_approval": config.security.tool_policy.require_approval,
+                    "require_elevated": config.security.tool_policy.require_elevated,
+                })
+            
+            self.tool_manager = ToolCallManager(
+                registry=self.tools,
+                retry_config=retry_config,
+                circuit_config=circuit_config,
+                tool_policy=tool_policy,
+                enable_validation=config.agents.tool_reinforcement.pre_validation,
+            )
+            logger.info("Tool call manager enabled with retry and circuit breaker")
+            
+            # Initialize tool advisor if adaptive selection enabled
+            if config.agents.tool_reinforcement.adaptive_selection:
+                advisor_config = AdvisorConfig(
+                    min_calls_for_confidence=config.agents.tool_reinforcement.min_calls_for_confidence,
+                    default_confidence=config.agents.tool_reinforcement.default_confidence,
+                    error_warning_threshold=config.agents.tool_reinforcement.error_warning_threshold,
+                    suggest_alternative_threshold=config.agents.tool_reinforcement.suggest_alternative_threshold,
+                )
+                advisor_path = Path(config.agents.tool_reinforcement.advisor_storage_path).expanduser()
+                self.tool_advisor = ToolAdvisor(
+                    storage_path=advisor_path,
+                    config=advisor_config,
+                )
+                logger.info("Tool advisor enabled for adaptive tool selection")
+        
         self._running = False
+        self._auto_interview_pending: set[str] = set()  # Models pending interview
         self._register_default_tools()
     
     def _register_default_tools(self) -> None:
@@ -166,6 +262,16 @@ class AgentLoop:
             from nanobot.agent.tools.swarm import SwarmTool, SwarmStatusTool
             self.tools.register(SwarmTool(orchestrator=self.swarm_orchestrator))
             self.tools.register(SwarmStatusTool(orchestrator=self.swarm_orchestrator))
+        
+        # Memory tool (for explicit memory operations)
+        enable_memory_tool = True
+        if self.config and hasattr(self.config.agents, 'memory'):
+            enable_memory_tool = self.config.agents.memory.enabled
+        
+        if enable_memory_tool:
+            from nanobot.agent.tools.memory import MemoryToolWrapper
+            memory_tool = MemoryToolWrapper(workspace=self.workspace)
+            self.tools.register(memory_tool)
     
     async def run(self) -> None:
         """Run the agent loop, processing messages from the bus."""
@@ -255,6 +361,11 @@ class AgentLoop:
                 f"Tier: {routing_decision.tier} -> Model: {model_to_use}"
             )
         
+        # Check if model needs profiling (auto-interview)
+        if self.model_registry and not self.model_registry.get_profile(model_to_use):
+            # Schedule background auto-interview (non-blocking)
+            asyncio.create_task(self._auto_interview_model(model_to_use))
+        
         # Check if swarm should be used for complex tasks
         if self.swarm_orchestrator and routing_decision:
             from nanobot.agent.swarm_trigger import should_use_swarm, auto_select_pattern
@@ -292,10 +403,10 @@ class AgentLoop:
         while iteration < self.max_iterations:
             iteration += 1
             
-            # Apply context compaction if needed
+            # Apply context compaction if needed (with memory-aware saving)
             if self.context_guard:
                 messages = await self.context_guard.compact_if_needed(
-                    messages, self.provider
+                    messages, self.provider, session_id=msg.session_key
                 )
             
             # Call LLM with routed model
@@ -306,11 +417,28 @@ class AgentLoop:
             )
             
             # Track model health for routing
+            success = bool(response.content)
             if self.router:
-                if response.content:
+                if success:
                     self.router.mark_model_success(model_to_use)
                 else:
                     self.router.mark_model_failed(model_to_use)
+            
+            # Update runtime stats in model registry
+            if self.model_registry:
+                tool_success = None
+                if response.has_tool_calls:
+                    # We'll track tool success as None here since we haven't executed yet
+                    tool_success = True  # Optimistic; will be corrected if tools fail
+                self.model_registry.update_runtime_stats(
+                    model_id=model_to_use,
+                    success=success,
+                    tool_success=tool_success,
+                )
+                
+                # Check for high failure rate and trigger re-assessment
+                if not success:
+                    asyncio.create_task(self._quick_assess_on_failure(model_to_use))
             
             # Handle tool calls
             if response.has_tool_calls:
@@ -330,10 +458,39 @@ class AgentLoop:
                     messages, response.content, tool_call_dicts
                 )
                 
-                # Execute tools
+                # Execute tools (with retry/circuit breaker if tool_manager available)
                 for tool_call in response.tool_calls:
                     logger.debug(f"Executing tool: {tool_call.name}")
-                    result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                    
+                    tool_success = True
+                    start_time = asyncio.get_event_loop().time()
+                    
+                    if self.tool_manager:
+                        # Use tool manager with retry and circuit breaker
+                        exec_result = await self.tool_manager.execute_with_retry(
+                            tool_name=tool_call.name,
+                            arguments=tool_call.arguments,
+                            model_profile=self.model_registry.get_profile(model_to_use) if self.model_registry else None,
+                            call_id=tool_call.id,
+                        )
+                        result = exec_result.result
+                        tool_success = exec_result.success
+                    else:
+                        # Direct execution (fallback)
+                        result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                        tool_success = not result.startswith("Error:")
+                    
+                    # Track tool usage in advisor
+                    if self.tool_advisor:
+                        latency_ms = (asyncio.get_event_loop().time() - start_time) * 1000
+                        self.tool_advisor.record_tool_call(
+                            model_id=model_to_use,
+                            tool_name=tool_call.name,
+                            success=tool_success,
+                            latency_ms=latency_ms,
+                            error=result if not tool_success else "",
+                        )
+                    
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
@@ -534,6 +691,25 @@ class AgentLoop:
         
         return self.team_orchestrator.get_status()
     
+    def get_tool_status(self) -> dict[str, Any]:
+        """Get current tool health and advisor status."""
+        status: dict[str, Any] = {
+            "tool_manager_enabled": self.tool_manager is not None,
+            "tool_advisor_enabled": self.tool_advisor is not None,
+        }
+        
+        if self.tool_manager:
+            status["tool_health"] = self.tool_manager.get_all_tool_health()
+        
+        if self.tool_advisor:
+            status["advisor_summary"] = self.tool_advisor.get_summary()
+            status["problematic_combinations"] = [
+                {"model": m, "tool": t, "success_rate": r, "calls": c}
+                for m, t, r, c in self.tool_advisor.get_problematic_combinations(min_calls=5)
+            ]
+        
+        return status
+    
     async def _handle_team_commands(self, msg: InboundMessage) -> str | None:
         """
         Handle team-specific commands (/reach, /done).
@@ -596,3 +772,101 @@ class AgentLoop:
         # Clean up team orchestrator
         if self.team_orchestrator:
             self.team_orchestrator.reset()
+    
+    async def _save_summary_to_memory(self, summary: str, session_id: str = "") -> None:
+        """
+        Save a conversation summary to memory.
+        
+        Called by ContextGuard when compacting conversation history.
+        
+        Args:
+            summary: The generated summary.
+            session_id: Session identifier for context.
+        """
+        try:
+            # Use enhanced memory if available
+            session_note = f" (session: {session_id})" if session_id else ""
+            content = f"## Conversation Summary{session_note}\n\n{summary}"
+            
+            success = self.context.add_memory(
+                content=content,
+                to_long_term=False,  # Add to daily notes
+            )
+            
+            if success:
+                logger.debug(f"Saved conversation summary to memory")
+            else:
+                # Fallback: write directly to simple memory
+                from datetime import datetime
+                self.context.simple_memory.append_today(
+                    f"### Conversation Summary ({datetime.now().strftime('%H:%M')})\n\n{summary}"
+                )
+                
+        except Exception as e:
+            logger.warning(f"Failed to save summary to memory: {e}")
+    
+    async def _auto_interview_model(self, model_id: str) -> None:
+        """
+        Auto-interview a model if profiler is enabled and model has no profile.
+        
+        This runs in the background to avoid blocking the main loop.
+        
+        Args:
+            model_id: The model identifier to interview.
+        """
+        if not self.config or not self.config.agents.profiler.auto_interview:
+            return
+        
+        if not self.model_registry or not self.model_interviewer:
+            return
+        
+        # Skip if already interviewed or pending
+        if self.model_registry.get_profile(model_id):
+            return
+        
+        if model_id in self._auto_interview_pending:
+            return
+        
+        self._auto_interview_pending.add(model_id)
+        logger.info(f"Auto-interviewing model: {model_id}")
+        
+        try:
+            # Run quick assessment (faster than full interview)
+            profile = await self.model_interviewer.quick_assessment(model_id)
+            self.model_registry.save_profile(profile)
+            logger.info(f"Auto-interview complete for {model_id}, overall score: {profile.capabilities.overall_score:.2f}")
+        except Exception as e:
+            logger.warning(f"Auto-interview failed for {model_id}: {e}")
+        finally:
+            self._auto_interview_pending.discard(model_id)
+    
+    async def _quick_assess_on_failure(self, model_id: str) -> None:
+        """
+        Re-assess a model after repeated failures.
+        
+        This can help identify if a model's capabilities have degraded
+        or if it needs updated guardrails.
+        
+        Args:
+            model_id: The model identifier to re-assess.
+        """
+        if not self.config or not self.config.agents.profiler.quick_assess_on_failure:
+            return
+        
+        if not self.model_registry or not self.model_interviewer:
+            return
+        
+        # Check if model has a profile and has high failure rate
+        profile = self.model_registry.get_profile(model_id)
+        if not profile:
+            return
+        
+        stats = profile.runtime_stats
+        if stats.total_requests < 10:
+            return  # Not enough data
+        
+        failure_rate = 1 - stats.success_rate
+        if failure_rate > 0.3:  # More than 30% failure rate
+            if model_id not in self._auto_interview_pending:
+                logger.warning(f"High failure rate ({failure_rate:.1%}) for {model_id}, triggering re-assessment")
+                await self._auto_interview_model(model_id)

@@ -23,6 +23,8 @@ from nanobot.swarm.team_agent import TeamAgent, AgentResponse
 if TYPE_CHECKING:
     from nanobot.providers.base import LLMProvider
     from nanobot.config.schema import TeamConfig
+    from nanobot.profiler.registry import ModelRegistry
+    from nanobot.profiler.profile import ModelProfile
 
 
 @dataclass
@@ -62,6 +64,7 @@ class AgentTeam:
     - Hierarchy and authority levels
     - Role-based task assignment
     - Collaborative consultation
+    - Profile-aware model selection (via ModelRegistry)
     """
     
     def __init__(
@@ -69,6 +72,7 @@ class AgentTeam:
         provider: "LLMProvider",
         workspace: Path,
         config: "TeamConfig | None" = None,
+        model_registry: "ModelRegistry | None" = None,
     ):
         """
         Initialize the agent team.
@@ -77,16 +81,23 @@ class AgentTeam:
             provider: LLM provider for API calls.
             workspace: Workspace path.
             config: Optional team configuration.
+            model_registry: Optional model registry for profile-aware assignment.
         """
         self.provider = provider
         self.workspace = workspace
         self.config = config
+        self.model_registry = model_registry
         
         # Initialize roles and agents
         self._roles: dict[str, AgentRole] = {}
         self._agents: dict[str, TeamAgent] = {}
+        self._agent_profiles: dict[str, "ModelProfile"] = {}  # Cache profiles
         
         self._initialize_team()
+        
+        # Optimize role assignments if registry available
+        if model_registry:
+            self._optimize_role_assignments()
     
     def _initialize_team(self) -> None:
         """Initialize team with configured roles."""
@@ -113,13 +124,64 @@ class AgentTeam:
                 )
             
             self._roles[role_id] = role
+            
+            # Get model profile if registry available
+            profile = None
+            if self.model_registry:
+                profile = self.model_registry.get_profile(role.model)
+                if profile:
+                    self._agent_profiles[role_id] = profile
+            
             self._agents[role_id] = TeamAgent(
                 role=role,
                 provider=self.provider,
                 workspace=self.workspace,
+                profile=profile,
             )
         
         logger.info(f"Team initialized with {len(self._agents)} agents")
+    
+    def _optimize_role_assignments(self) -> None:
+        """
+        Check if configured models are suitable for their roles.
+        Log warnings for mismatches, suggest alternatives.
+        """
+        if not self.model_registry:
+            return
+        
+        for role_id, role in self._roles.items():
+            profile = self.model_registry.get_profile(role.model)
+            
+            if not profile:
+                logger.debug(f"No profile for {role.model} in role {role_id}")
+                continue
+            
+            # Check suitability
+            score, reasoning = profile.get_role_suitability(role_id)
+            
+            if score < 0.6:
+                # Get recommendations
+                recommendations = self.model_registry.get_role_recommendations(
+                    role_id,
+                    top_n=3,
+                )
+                
+                rec_str = ", ".join(
+                    f"{m} ({s:.2f})" for m, s, _ in recommendations[:3]
+                )
+                
+                logger.warning(
+                    f"Model {role.model} may not be optimal for role '{role_id}' "
+                    f"(score: {score:.2f}). Consider: {rec_str}"
+                )
+            elif score < 0.8:
+                logger.info(
+                    f"Model {role.model} is adequate for '{role_id}' ({score:.2f}): {reasoning}"
+                )
+    
+    def get_profile_for_agent(self, role_id: str) -> "ModelProfile | None":
+        """Get the cached profile for an agent."""
+        return self._agent_profiles.get(role_id)
     
     def get_agent(self, role_id: str) -> TeamAgent | None:
         """Get an agent by role ID."""
@@ -387,7 +449,22 @@ class AgentTeam:
                 error=f"Agent '{role_id}' not found",
             )
         
-        return await agent.execute(task, context)
+        response = await agent.execute(task, context)
+        
+        # Update runtime stats in model registry
+        if self.model_registry:
+            tool_success = None
+            if response.metadata.get("tool_calls_made"):
+                tool_success = response.success
+            
+            self.model_registry.update_runtime_stats(
+                model_id=agent.model,
+                success=response.success,
+                tool_success=tool_success,
+                latency_ms=response.execution_time * 1000,
+            )
+        
+        return response
     
     def get_team_stats(self) -> dict[str, Any]:
         """Get statistics for all team members."""
