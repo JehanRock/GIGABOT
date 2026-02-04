@@ -35,13 +35,38 @@ def main(
 
 
 # ============================================================================
-# Onboard / Setup
+# Setup / Onboard
 # ============================================================================
 
 
 @app.command()
+def setup(
+    non_interactive: bool = typer.Option(
+        False, "--non-interactive", "-y",
+        help="Run in non-interactive mode using environment variables"
+    ),
+    reset: bool = typer.Option(
+        False, "--reset", "-r",
+        help="Reset existing configuration"
+    ),
+):
+    """Interactive setup wizard for GigaBot configuration."""
+    from nanobot.cli.setup import run_setup_wizard
+    
+    success = run_setup_wizard(non_interactive=non_interactive, reset=reset)
+    
+    if success:
+        if typer.confirm("\nStart GigaBot gateway now?", default=True):
+            gateway()
+    else:
+        raise typer.Exit(1)
+
+
+@app.command()
 def onboard():
-    """Initialize GigaBot configuration and workspace."""
+    """Initialize GigaBot configuration and workspace (legacy - use 'setup' instead)."""
+    console.print("[yellow]Note: 'onboard' is deprecated. Use 'gigabot setup' for interactive wizard.[/yellow]\n")
+    
     from nanobot.config.loader import get_config_path, save_config
     from nanobot.config.schema import Config
     from nanobot.utils.helpers import get_workspace_path
@@ -67,10 +92,9 @@ def onboard():
     
     console.print(f"\n{__logo__} GigaBot is ready!")
     console.print("\nNext steps:")
-    console.print("  1. Add your API key to [cyan]~/.gigabot/config.yaml[/cyan]")
-    console.print("     Get one at: https://openrouter.ai/keys")
-    console.print("  2. Chat: [cyan]gigabot agent -m \"Hello!\"[/cyan]")
-    console.print("\n[dim]For multi-channel setup (Telegram/Discord/WhatsApp), see the README[/dim]")
+    console.print("  1. Run [cyan]gigabot setup[/cyan] for interactive configuration")
+    console.print("  2. Or start with: [cyan]gigabot gateway[/cyan]")
+    console.print("\n[dim]For full setup, run: gigabot setup[/dim]")
 
 
 
@@ -152,11 +176,68 @@ This file stores important information that should persist across sessions.
 # ============================================================================
 
 
+def _check_setup_complete(config, force: bool = False) -> bool:
+    """Check if setup is complete. Returns True if ready to start."""
+    import os
+    import sys
+    
+    # Check for API key in config or environment
+    api_key = config.get_api_key()
+    
+    # Also check environment variables directly
+    if not api_key:
+        for env_var in ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"]:
+            api_key = os.environ.get(env_var, "").strip()
+            if api_key:
+                break
+    
+    # If API key exists (from config or env), we can proceed
+    # even if setup wasn't formally completed
+    if api_key:
+        if not config.security.auth.setup_complete:
+            console.print("[dim]API key found. Skipping setup wizard.[/dim]")
+        return True
+    
+    # No API key found - check if we can run interactively
+    is_interactive = sys.stdin.isatty() and not force
+    
+    if not config.security.auth.setup_complete:
+        console.print("[yellow]GigaBot has not been configured yet.[/yellow]")
+        
+        if is_interactive:
+            console.print("\nRun [cyan]gigabot setup[/cyan] to configure GigaBot interactively.")
+            console.print("Or use [cyan]--force[/cyan] to start anyway.\n")
+            
+            if typer.confirm("Run setup wizard now?", default=True):
+                from nanobot.cli.setup import run_setup_wizard
+                if not run_setup_wizard():
+                    return False
+                return True
+            return False
+        else:
+            # Non-interactive mode (e.g., Docker)
+            console.print("[red]Error: No API key configured.[/red]")
+            console.print("\nSet one of these environment variables:")
+            console.print("  - [cyan]OPENROUTER_API_KEY[/cyan]")
+            console.print("  - [cyan]ANTHROPIC_API_KEY[/cyan]")
+            console.print("  - [cyan]OPENAI_API_KEY[/cyan]")
+            return False
+    
+    # Setup was completed but no API key
+    console.print("[red]Error: No API key configured.[/red]")
+    console.print("\nEither:")
+    console.print("  1. Run [cyan]gigabot setup[/cyan] to configure interactively")
+    console.print("  2. Set [cyan]OPENROUTER_API_KEY[/cyan] environment variable")
+    console.print("  3. Edit [cyan]~/.nanobot/config.json[/cyan] directly")
+    return False
+
+
 @app.command()
 def gateway(
     host: str = typer.Option("0.0.0.0", "--host", "-H", help="Host to bind to"),
     port: int = typer.Option(18790, "--port", "-p", help="Gateway port"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
+    force: bool = typer.Option(False, "--force", "-f", help="Start even if setup incomplete"),
 ):
     """Start the GigaBot gateway."""
     from nanobot.config.loader import load_config, get_data_dir
@@ -174,9 +255,16 @@ def gateway(
         import logging
         logging.basicConfig(level=logging.DEBUG)
     
-    console.print(f"{__logo__} Starting GigaBot gateway on {host}:{port}...")
-    
     config = load_config()
+    
+    # Check setup status
+    if not _check_setup_complete(config, force):
+        raise typer.Exit(1)
+    
+    # Reload config in case setup was just run
+    config = load_config()
+    
+    console.print(f"{__logo__} Starting GigaBot gateway on {host}:{port}...")
     
     # Create components
     bus = MessageBus()
@@ -195,7 +283,7 @@ def gateway(
         console.print(f"[green]✓[/green] LLM provider configured")
     else:
         console.print("[yellow]Warning: No API key configured - chat disabled[/yellow]")
-        console.print("  Add OPENROUTER_API_KEY or ANTHROPIC_API_KEY to .env")
+        console.print("  Run [cyan]gigabot setup[/cyan] to configure API keys")
     
     # Create agent with tiered routing and swarm support (if provider available)
     agent = None
@@ -268,13 +356,69 @@ def gateway(
         port=port,
         config=config,
         node_manager=node_manager,
+        cron_service=cron,
     )
     
+    # Set up config persistence handler
+    from nanobot.config.loader import save_config as save_config_to_file
+    
+    def persist_config():
+        """Save current config to file and initialize agent if API key is now available."""
+        nonlocal agent, provider
+        
+        save_config_to_file(config)
+        console.print("[dim]Config saved[/dim]")
+        
+        # Re-check API key and initialize agent if needed
+        api_key = config.get_api_key()
+        api_base = config.get_api_base()
+        
+        if not agent and api_key:
+            console.print(f"[green]✓[/green] New API key detected, initializing agent...")
+            
+            provider = LiteLLMProvider(
+                api_key=api_key,
+                api_base=api_base,
+                default_model=config.agents.defaults.model
+            )
+            
+            agent = AgentLoop(
+                bus=bus,
+                provider=provider,
+                workspace=config.workspace_path,
+                model=config.agents.defaults.model,
+                config=config,
+                max_iterations=config.agents.defaults.max_tool_iterations,
+                brave_api_key=config.tools.web.search.api_key or None
+            )
+            
+            # Start the agent loop
+            asyncio.create_task(agent.run())
+            
+            # Enable heartbeat if it was waiting for agent
+            if not heartbeat.enabled:
+                heartbeat.enabled = True
+                asyncio.create_task(heartbeat.start())
+                
+            console.print(f"[green]✓[/green] Agent initialized and running")
+    
+    ui_server.set_save_config_handler(persist_config)
+    
     # Set up chat handler
-    async def handle_chat(message: str, session_id: str) -> str:
+    async def handle_chat(
+        message: str, 
+        session_id: str, 
+        model: str | None = None,
+        thinking_level: str = "medium",
+    ) -> str:
         if not agent:
-            return "Chat is disabled - no API key configured. Add OPENROUTER_API_KEY or ANTHROPIC_API_KEY to your .env file and restart."
-        return await agent.process_direct(message, session_id)
+            return "Chat is disabled - no API key configured. Go to Settings > Providers and enter your API key, then try again."
+        return await agent.process_direct(
+            message, 
+            session_id,
+            model=model,
+            thinking_level=thinking_level,
+        )
     
     ui_server.set_chat_handler(handle_chat)
     
@@ -335,6 +479,88 @@ def gateway(
     asyncio.run(run())
 
 
+@app.command(name="gateway-v2")
+def gateway_v2(
+    host: str = typer.Option("0.0.0.0", "--host", "-H", help="Host to bind to"),
+    port: int = typer.Option(18790, "--port", "-p", help="Gateway port"),
+    reload: bool = typer.Option(False, "--reload", "-r", help="Enable auto-reload for development"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
+    force: bool = typer.Option(False, "--force", "-f", help="Start even if setup incomplete"),
+):
+    """Start the GigaBot gateway (FastAPI version with hot-reload support)."""
+    import uvicorn
+    from nanobot.config.loader import load_config
+    from nanobot.server.main import create_app
+    from nanobot.channels.manager import ChannelManager
+    from nanobot.nodes.manager import NodeManager, set_node_manager
+    
+    if verbose:
+        import logging
+        logging.basicConfig(level=logging.DEBUG)
+    
+    config = load_config()
+    
+    # Check setup status
+    if not _check_setup_complete(config, force):
+        raise typer.Exit(1)
+    
+    # Reload config in case setup was just run
+    config = load_config()
+    
+    console.print(f"{__logo__} Starting GigaBot v2 gateway on {host}:{port}...")
+    
+    # Create channel manager
+    from nanobot.bus.queue import MessageBus
+    bus = MessageBus()
+    channels = ChannelManager(config, bus)
+    
+    # Create node manager if enabled
+    node_manager: NodeManager | None = None
+    if config.nodes.enabled:
+        storage_path = Path(config.nodes.storage_path).expanduser()
+        node_manager = NodeManager(
+            storage_path=storage_path,
+            auth_token=config.nodes.auth_token,
+            auto_approve=config.nodes.auto_approve,
+            ping_interval=config.nodes.ping_interval,
+        )
+        set_node_manager(node_manager)
+        console.print(f"[green]✓[/green] Nodes system enabled")
+    
+    # Create FastAPI app
+    app_instance = create_app(
+        config=config,
+        workspace=config.workspace_path,
+        channels=channels,
+        node_manager=node_manager,
+    )
+    
+    api_key = config.get_api_key()
+    if api_key:
+        console.print(f"[green]✓[/green] API key configured")
+    else:
+        console.print("[yellow]Warning: No API key configured - chat disabled[/yellow]")
+        console.print("  Configure via Settings > Providers in the dashboard")
+    
+    if channels.enabled_channels:
+        console.print(f"[green]✓[/green] Channels enabled: {', '.join(channels.enabled_channels)}")
+    
+    console.print(f"[green]✓[/green] Dashboard: http://{host}:{port}/")
+    
+    if reload:
+        console.print(f"[green]✓[/green] Auto-reload enabled")
+    
+    console.print("\n[green]GigaBot v2 is starting. Press Ctrl+C to stop.[/green]\n")
+    
+    # Run with uvicorn
+    uvicorn.run(
+        app_instance,
+        host=host,
+        port=port,
+        reload=reload,
+        reload_dirs=["nanobot"] if reload else None,
+        log_level="debug" if verbose else "info",
+    )
 
 
 # ============================================================================
@@ -2621,6 +2847,930 @@ def node_allowlist(
     else:
         console.print(f"[red]Unknown action: {action}[/red]")
         console.print("Use: list, add, remove")
+
+
+# ============================================================================
+# Intent Commands (Proactive AI - Intent Tracking)
+# ============================================================================
+
+intent_app = typer.Typer(help="Intent tracking for proactive AI")
+app.add_typer(intent_app, name="intent")
+
+
+@intent_app.command("history")
+def intent_history(
+    days: int = typer.Option(30, "--days", "-d", help="Days of history to show"),
+    category: str = typer.Option(None, "--category", "-c", help="Filter by category"),
+    user_id: str = typer.Option("default", "--user", "-u", help="User ID"),
+    limit: int = typer.Option(20, "--limit", "-l", help="Max entries to show"),
+):
+    """View recent intent history."""
+    from nanobot.config.loader import load_config
+    from nanobot.intent.tracker import IntentTracker
+    
+    config = load_config()
+    
+    tracker = IntentTracker(
+        workspace=config.workspace_path,
+        provider=None,  # Don't need provider for reading history
+    )
+    
+    intents = tracker.get_history(user_id=user_id, days=days, category=category)
+    
+    console.print(f"\n{__logo__} [bold]Intent History[/bold]")
+    console.print(f"  User: {user_id} | Days: {days}")
+    if category:
+        console.print(f"  Category filter: {category}")
+    console.print("")
+    
+    if not intents:
+        console.print("[dim]No intents found.[/dim]")
+        return
+    
+    table = Table()
+    table.add_column("Time", style="dim")
+    table.add_column("Category", style="cyan")
+    table.add_column("Goal", no_wrap=False)
+    table.add_column("Status", style="green")
+    
+    for intent in intents[:limit]:
+        time_str = intent.created_at.strftime("%m-%d %H:%M")
+        status = "✓" if intent.completed_at else "⋯"
+        table.add_row(
+            time_str,
+            intent.category,
+            intent.inferred_goal[:60] + "..." if len(intent.inferred_goal) > 60 else intent.inferred_goal,
+            status,
+        )
+    
+    console.print(table)
+    console.print(f"\n[dim]Showing {min(len(intents), limit)} of {len(intents)} intents[/dim]")
+
+
+@intent_app.command("patterns")
+def intent_patterns(
+    user_id: str = typer.Option("default", "--user", "-u", help="User ID"),
+    refresh: bool = typer.Option(False, "--refresh", "-r", help="Re-analyze patterns"),
+):
+    """Show discovered patterns in user behavior."""
+    from nanobot.config.loader import load_config
+    from nanobot.providers.litellm_provider import LiteLLMProvider
+    from nanobot.intent.tracker import IntentTracker
+    
+    config = load_config()
+    
+    provider = None
+    if refresh:
+        api_key = config.get_api_key()
+        if api_key:
+            provider = LiteLLMProvider(
+                api_key=api_key,
+                api_base=config.get_api_base(),
+                default_model=config.agents.intent_tracking.analysis_model,
+            )
+    
+    tracker = IntentTracker(
+        workspace=config.workspace_path,
+        provider=provider,
+        model=config.agents.intent_tracking.analysis_model,
+    )
+    
+    console.print(f"\n{__logo__} [bold]Intent Patterns[/bold]")
+    console.print(f"  User: {user_id}")
+    
+    if refresh:
+        console.print("\n[dim]Analyzing patterns...[/dim]")
+        
+        async def analyze():
+            return await tracker.analyze_patterns(user_id=user_id)
+        
+        patterns = asyncio.run(analyze())
+    else:
+        patterns = tracker._load_patterns()
+    
+    if not patterns:
+        console.print("\n[dim]No patterns discovered yet.[/dim]")
+        console.print("Use --refresh to analyze intent history")
+        return
+    
+    console.print("")
+    
+    for pattern in patterns:
+        console.print(f"[cyan]{pattern.pattern_type}[/cyan]")
+        console.print(f"  {pattern.description}")
+        console.print(f"  Confidence: {pattern.confidence:.0%} | Frequency: {pattern.frequency}")
+        console.print("")
+
+
+@intent_app.command("predict")
+def intent_predict(
+    user_id: str = typer.Option("default", "--user", "-u", help="User ID"),
+):
+    """Predict likely upcoming user intents."""
+    from nanobot.config.loader import load_config
+    from nanobot.providers.litellm_provider import LiteLLMProvider
+    from nanobot.intent.tracker import IntentTracker
+    
+    config = load_config()
+    
+    api_key = config.get_api_key()
+    if not api_key:
+        console.print("[red]Error: No API key configured.[/red]")
+        raise typer.Exit(1)
+    
+    provider = LiteLLMProvider(
+        api_key=api_key,
+        api_base=config.get_api_base(),
+        default_model=config.agents.intent_tracking.analysis_model,
+    )
+    
+    tracker = IntentTracker(
+        workspace=config.workspace_path,
+        provider=provider,
+        model=config.agents.intent_tracking.analysis_model,
+    )
+    
+    console.print(f"\n{__logo__} [bold]Intent Predictions[/bold]")
+    console.print(f"  User: {user_id}")
+    console.print("\n[dim]Analyzing patterns...[/dim]")
+    
+    async def predict():
+        return await tracker.predict_next_intent(user_id=user_id)
+    
+    predictions = asyncio.run(predict())
+    
+    if not predictions:
+        console.print("\n[dim]Not enough data for predictions.[/dim]")
+        console.print("Continue using GigaBot to build intent history")
+        return
+    
+    console.print("\n[bold]Predicted Next Actions:[/bold]")
+    
+    for i, pred in enumerate(predictions, 1):
+        console.print(f"\n{i}. [cyan]{pred.predicted_goal}[/cyan]")
+        console.print(f"   Category: {pred.category} | Confidence: {pred.confidence:.0%}")
+        console.print(f"   [dim]{pred.reasoning}[/dim]")
+
+
+@intent_app.command("stats")
+def intent_stats(
+    user_id: str = typer.Option("default", "--user", "-u", help="User ID"),
+):
+    """Show intent tracking statistics."""
+    from nanobot.config.loader import load_config
+    from nanobot.intent.tracker import IntentTracker
+    
+    config = load_config()
+    
+    tracker = IntentTracker(
+        workspace=config.workspace_path,
+        provider=None,
+    )
+    
+    stats = tracker.get_stats(user_id=user_id)
+    
+    console.print(f"\n{__logo__} [bold]Intent Statistics[/bold]")
+    console.print(f"  User: {user_id}\n")
+    
+    console.print(f"  Total intents: {stats['total_intents']}")
+    console.print(f"  Recurring intents: {stats['recurring_intents']}")
+    console.print(f"  Completion rate: {stats['completion_rate']:.0%}")
+    console.print(f"  Average satisfaction: {stats['average_satisfaction']:.0%}")
+    console.print(f"  Patterns discovered: {stats['patterns_discovered']}")
+    
+    console.print("\n[bold]Category Distribution:[/bold]")
+    for cat, count in sorted(stats['category_distribution'].items(), key=lambda x: -x[1]):
+        bar = "█" * min(count, 20)
+        console.print(f"  {cat:15} {bar} {count}")
+
+
+# ============================================================================
+# Memory Evolution Commands (extends memory_app defined above)
+# ============================================================================
+
+
+@memory_app.command("evolve")
+def memory_evolve(
+    dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Preview without making changes"),
+):
+    """Run memory evolution cycle (promote, decay, archive, cross-reference)."""
+    from nanobot.config.loader import load_config
+    from nanobot.memory.store import MemoryStore
+    from nanobot.memory.evolution import MemoryEvolution
+    
+    config = load_config()
+    
+    store = MemoryStore(config.workspace_path)
+    evolution = MemoryEvolution(
+        store=store,
+        vector_store=None,  # Would need to initialize if consolidation needed
+        config=config.agents.memory_evolution.model_dump() if hasattr(config.agents, 'memory_evolution') else None,
+    )
+    
+    console.print(f"\n{__logo__} [bold]Memory Evolution[/bold]")
+    if dry_run:
+        console.print("[yellow]DRY RUN - no changes will be made[/yellow]")
+    console.print("")
+    
+    async def run_evolution():
+        return await evolution.evolve(
+            dry_run=dry_run,
+            auto_promote=config.agents.memory_evolution.auto_promote if hasattr(config.agents, 'memory_evolution') else True,
+            auto_decay=config.agents.memory_evolution.auto_expire if hasattr(config.agents, 'memory_evolution') else True,
+            auto_archive=config.agents.memory_evolution.auto_archive if hasattr(config.agents, 'memory_evolution') else True,
+        )
+    
+    report = asyncio.run(run_evolution())
+    
+    console.print("[bold]Evolution Report:[/bold]")
+    console.print(f"  Promoted: {len(report.promoted)} memories")
+    console.print(f"  Decayed: {len(report.decayed)} memories")
+    console.print(f"  Archived: {len(report.archived)} memories")
+    console.print(f"  Cross-refs added: {report.cross_refs_added}")
+    console.print(f"  Consolidated: {report.consolidated}")
+    console.print(f"\n[dim]Duration: {report.duration_ms:.0f}ms[/dim]")
+
+
+@memory_app.command("evolution-stats")
+def memory_evolution_stats():
+    """Show memory evolution statistics (promotion, decay, cross-refs)."""
+    from nanobot.config.loader import load_config
+    from nanobot.memory.store import MemoryStore
+    from nanobot.memory.evolution import MemoryEvolution
+    
+    config = load_config()
+    
+    store = MemoryStore(config.workspace_path)
+    evolution = MemoryEvolution(store=store, vector_store=None)
+    
+    stats = evolution.get_stats()
+    
+    console.print(f"\n{__logo__} [bold]Memory Evolution Statistics[/bold]\n")
+    
+    console.print(f"  Total entries: {stats['total_entries']}")
+    console.print(f"  Active entries: {stats['active_entries']}")
+    console.print(f"  Archived entries: {stats['archived_entries']}")
+    console.print(f"  Cross-references: {stats['total_cross_references']}")
+    
+    console.print("\n[bold]Importance Distribution:[/bold]")
+    dist = stats['importance_distribution']
+    console.print(f"  High (>0.7):   {'█' * min(dist['high'], 30)} {dist['high']}")
+    console.print(f"  Medium:        {'█' * min(dist['medium'], 30)} {dist['medium']}")
+    console.print(f"  Low (<0.3):    {'█' * min(dist['low'], 30)} {dist['low']}")
+    
+    console.print("\n[bold]Evolution Status:[/bold]")
+    console.print(f"  Promoted memories: {stats['promoted_memories']}")
+    console.print(f"  Decayed memories: {stats['decayed_memories']}")
+    console.print(f"  Total accesses: {stats['total_accesses']}")
+    console.print(f"  Avg accesses/entry: {stats['average_accesses_per_entry']:.1f}")
+
+
+@memory_app.command("promote")
+def memory_promote(
+    entry_id: str = typer.Argument(..., help="Memory entry ID to promote"),
+    reason: str = typer.Option("manual", "--reason", "-r", help="Reason for promotion"),
+):
+    """Manually promote a memory's importance."""
+    from nanobot.config.loader import load_config
+    from nanobot.memory.store import MemoryStore
+    from nanobot.memory.evolution import MemoryEvolution
+    
+    config = load_config()
+    
+    store = MemoryStore(config.workspace_path)
+    evolution = MemoryEvolution(store=store, vector_store=None)
+    
+    async def promote():
+        return await evolution.promote_memory(entry_id, reason)
+    
+    success = asyncio.run(promote())
+    
+    if success:
+        console.print(f"[green]✓[/green] Promoted memory: {entry_id}")
+        console.print(f"  Reason: {reason}")
+    else:
+        console.print(f"[red]Failed to promote: {entry_id}[/red]")
+        console.print("  Memory may be archived or not found")
+
+
+@memory_app.command("archive")
+def memory_archive(
+    days: int = typer.Option(90, "--days", "-d", help="Archive entries not accessed in N days"),
+    dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Preview without archiving"),
+):
+    """Archive old, unused memories."""
+    from nanobot.config.loader import load_config
+    from nanobot.memory.store import MemoryStore
+    from nanobot.memory.evolution import MemoryEvolution
+    
+    config = load_config()
+    
+    store = MemoryStore(config.workspace_path)
+    evolution = MemoryEvolution(store=store, vector_store=None)
+    
+    console.print(f"\n{__logo__} [bold]Memory Archive[/bold]")
+    console.print(f"  Archiving entries not accessed in {days} days")
+    if dry_run:
+        console.print("[yellow]DRY RUN - no changes will be made[/yellow]")
+    console.print("")
+    
+    # Temporarily set the archive days
+    original_days = evolution.ARCHIVE_INACTIVE_DAYS
+    evolution.ARCHIVE_INACTIVE_DAYS = days
+    
+    async def run_archive():
+        return await evolution._run_archive(dry_run=dry_run)
+    
+    try:
+        archived = asyncio.run(run_archive())
+    finally:
+        evolution.ARCHIVE_INACTIVE_DAYS = original_days
+    
+    if archived:
+        console.print(f"[green]✓[/green] Archived {len(archived)} memories")
+        for entry_id in archived[:10]:
+            console.print(f"  - {entry_id}")
+        if len(archived) > 10:
+            console.print(f"  ... and {len(archived) - 10} more")
+    else:
+        console.print("[dim]No memories to archive.[/dim]")
+
+
+@memory_app.command("cross-ref")
+def memory_crossref(
+    entry_id: str = typer.Argument(..., help="Memory entry ID to cross-reference"),
+):
+    """Show and create cross-references for a memory entry."""
+    from nanobot.config.loader import load_config
+    from nanobot.memory.store import MemoryStore
+    from nanobot.memory.evolution import MemoryEvolution
+    
+    config = load_config()
+    
+    store = MemoryStore(config.workspace_path)
+    evolution = MemoryEvolution(store=store, vector_store=None)
+    
+    # Get existing refs
+    evo_data = store.get_evolution_data(entry_id)
+    existing_refs = evo_data.get("cross_references", [])
+    
+    console.print(f"\n{__logo__} [bold]Memory Cross-References[/bold]")
+    console.print(f"  Entry: {entry_id}\n")
+    
+    if existing_refs:
+        console.print("[bold]Existing References:[/bold]")
+        for ref_id in existing_refs:
+            console.print(f"  → {ref_id}")
+    else:
+        console.print("[dim]No existing cross-references[/dim]")
+    
+    # Find new ones
+    console.print("\n[dim]Finding related memories...[/dim]")
+    
+    async def find_refs():
+        return await evolution.cross_reference(entry_id)
+    
+    new_refs = asyncio.run(find_refs())
+    new_refs = [r for r in new_refs if r not in existing_refs]
+    
+    if new_refs:
+        console.print(f"\n[green]Added {len(new_refs)} new references:[/green]")
+        for ref_id in new_refs:
+            console.print(f"  + {ref_id}")
+    else:
+        console.print("\n[dim]No new related memories found[/dim]")
+
+
+# ============================================================================
+# Cost Optimization Commands (Phase 5B)
+# ============================================================================
+
+cost_app = typer.Typer(help="Cost optimization and budget management")
+app.add_typer(cost_app, name="cost")
+
+
+@cost_app.command("report")
+def cost_report(
+    period: str = typer.Option("week", "--period", "-p", help="Period: day, week, month"),
+):
+    """Show usage and cost report."""
+    from nanobot.config.loader import load_config
+    from nanobot.tracking.tokens import TokenTracker
+    from nanobot.tracking.optimizer import CostOptimizer
+    from nanobot.tracking.cache import ResponseCache
+    
+    config = load_config()
+    
+    # Initialize tracker
+    tracker_path = config.workspace_path / "tracking" / "tokens.json"
+    tracker = TokenTracker(
+        storage_path=tracker_path,
+        daily_budget_usd=config.agents.cost_optimization.daily_budget_usd if hasattr(config.agents, 'cost_optimization') else 0,
+        weekly_budget_usd=config.agents.cost_optimization.weekly_budget_usd if hasattr(config.agents, 'cost_optimization') else 0,
+    )
+    
+    # Initialize cache if enabled
+    cache = None
+    if hasattr(config.agents, 'cost_optimization') and config.agents.cost_optimization.response_caching:
+        cache_path = Path(config.agents.cost_optimization.cache_storage_path).expanduser()
+        if cache_path.exists():
+            cache = ResponseCache(storage_path=cache_path)
+    
+    # Initialize optimizer
+    optimizer = CostOptimizer(tracker=tracker, cache=cache)
+    
+    console.print(f"\n{__logo__} [bold]Cost Report ({period})[/bold]\n")
+    
+    # Get stats based on period
+    if period == "day":
+        stats = tracker.get_daily_stats()
+        cost = tracker.estimate_cost(stats)
+    else:  # week
+        stats = tracker.get_weekly_stats()
+        cost = tracker.estimate_cost(stats)
+    
+    console.print(f"  [bold]Tokens Used:[/bold]")
+    console.print(f"    Prompt:     {stats.prompt_tokens:,}")
+    console.print(f"    Completion: {stats.completion_tokens:,}")
+    console.print(f"    Total:      {stats.total_tokens:,}")
+    console.print(f"    Requests:   {stats.request_count}")
+    
+    console.print(f"\n  [bold]Estimated Cost:[/bold] ${cost:.4f}")
+    
+    # Budget status
+    if optimizer.daily_budget_usd > 0 or optimizer.weekly_budget_usd > 0:
+        console.print(f"\n  [bold]Budget Status:[/bold]")
+        within_budget, alert = optimizer.check_budget()
+        if alert:
+            console.print(f"    [yellow]{alert}[/yellow]")
+        else:
+            console.print(f"    [green]Within budget[/green]")
+    
+    # Model breakdown
+    if stats.model_usage:
+        console.print(f"\n  [bold]By Model:[/bold]")
+        for model, tokens in sorted(stats.model_usage.items(), key=lambda x: x[1], reverse=True)[:5]:
+            pct = tokens / stats.total_tokens * 100 if stats.total_tokens > 0 else 0
+            console.print(f"    {model}: {tokens:,} ({pct:.1f}%)")
+
+
+@cost_app.command("cache-stats")
+def cost_cache_stats():
+    """Show response cache statistics."""
+    from nanobot.config.loader import load_config
+    from nanobot.tracking.cache import ResponseCache
+    
+    config = load_config()
+    
+    if not hasattr(config.agents, 'cost_optimization') or not config.agents.cost_optimization.response_caching:
+        console.print("[yellow]Response caching is not enabled[/yellow]")
+        raise typer.Exit(1)
+    
+    cache_path = Path(config.agents.cost_optimization.cache_storage_path).expanduser()
+    if not cache_path.exists():
+        console.print("[dim]No cache data found yet[/dim]")
+        raise typer.Exit()
+    
+    cache = ResponseCache(storage_path=cache_path)
+    stats = cache.get_stats()
+    
+    console.print(f"\n{__logo__} [bold]Response Cache Statistics[/bold]\n")
+    
+    console.print(f"  Total entries:   {stats.total_entries}")
+    console.print(f"  Cache hits:      {stats.total_hits}")
+    console.print(f"  Cache misses:    {stats.total_misses}")
+    console.print(f"  Hit rate:        {stats.hit_rate:.1%}")
+    console.print(f"  Tokens saved:    {stats.total_tokens_saved:,}")
+    console.print(f"  Evictions:       {stats.total_evictions}")
+    
+    if stats.oldest_entry:
+        console.print(f"\n  Oldest entry:    {stats.oldest_entry.strftime('%Y-%m-%d %H:%M')}")
+    if stats.newest_entry:
+        console.print(f"  Newest entry:    {stats.newest_entry.strftime('%Y-%m-%d %H:%M')}")
+    
+    # Estimated savings
+    estimated_savings = (stats.total_tokens_saved / 1_000_000) * 1.0  # ~$1/1M tokens
+    console.print(f"\n  [green]Estimated savings: ${estimated_savings:.4f}[/green]")
+    
+    # Recent entries
+    entries = cache.get_entries(limit=5)
+    if entries:
+        console.print("\n  [bold]Recent Cache Entries:[/bold]")
+        for e in entries:
+            console.print(f"    [{e['hash']}] {e['preview'][:40]}... ({e['hits']} hits)")
+
+
+@cost_app.command("optimize")
+def cost_optimize():
+    """Get optimization suggestions to reduce costs."""
+    from nanobot.config.loader import load_config
+    from nanobot.tracking.tokens import TokenTracker
+    from nanobot.tracking.optimizer import CostOptimizer
+    from nanobot.tracking.cache import ResponseCache
+    
+    config = load_config()
+    
+    # Initialize components
+    tracker_path = config.workspace_path / "tracking" / "tokens.json"
+    tracker = TokenTracker(storage_path=tracker_path)
+    
+    cache = None
+    if hasattr(config.agents, 'cost_optimization') and config.agents.cost_optimization.response_caching:
+        cache_path = Path(config.agents.cost_optimization.cache_storage_path).expanduser()
+        if cache_path.exists():
+            cache = ResponseCache(storage_path=cache_path)
+    
+    optimizer = CostOptimizer(tracker=tracker, cache=cache)
+    suggestions = optimizer.get_optimization_suggestions()
+    
+    console.print(f"\n{__logo__} [bold]Cost Optimization Suggestions[/bold]\n")
+    
+    if not suggestions:
+        console.print("[green]✓ No optimization suggestions - usage looks efficient![/green]")
+        raise typer.Exit()
+    
+    for i, s in enumerate(suggestions, 1):
+        priority_color = {"high": "red", "medium": "yellow", "low": "dim"}.get(s.priority, "white")
+        console.print(f"  [{priority_color}]{s.priority.upper()}[/{priority_color}] {s.title}")
+        console.print(f"       {s.description}")
+        console.print(f"       [bold]Action:[/bold] {s.action}")
+        if s.estimated_usd > 0:
+            console.print(f"       [green]Potential savings: ${s.estimated_usd:.4f}[/green]")
+        console.print("")
+
+
+@cost_app.command("budget")
+def cost_budget(
+    daily: float = typer.Option(None, "--daily", "-d", help="Set daily budget (USD)"),
+    weekly: float = typer.Option(None, "--weekly", "-w", help="Set weekly budget (USD)"),
+):
+    """View or set budget limits."""
+    from nanobot.config.loader import load_config, save_config
+    
+    config = load_config()
+    
+    if not hasattr(config.agents, 'cost_optimization'):
+        console.print("[yellow]Cost optimization config not found[/yellow]")
+        raise typer.Exit(1)
+    
+    cost_config = config.agents.cost_optimization
+    
+    if daily is None and weekly is None:
+        # Just show current budgets
+        console.print(f"\n{__logo__} [bold]Budget Configuration[/bold]\n")
+        
+        daily_display = f"${cost_config.daily_budget_usd:.2f}" if cost_config.daily_budget_usd > 0 else "Unlimited"
+        weekly_display = f"${cost_config.weekly_budget_usd:.2f}" if cost_config.weekly_budget_usd > 0 else "Unlimited"
+        
+        console.print(f"  Daily budget:   {daily_display}")
+        console.print(f"  Weekly budget:  {weekly_display}")
+        console.print(f"  Alert at:       {cost_config.alert_threshold:.0%}")
+        console.print(f"  Auto-downgrade: {'Yes' if cost_config.auto_downgrade_on_budget else 'No'}")
+    else:
+        # Update budgets
+        if daily is not None:
+            cost_config.daily_budget_usd = daily
+        if weekly is not None:
+            cost_config.weekly_budget_usd = weekly
+        
+        save_config(config)
+        console.print(f"[green]✓[/green] Budget updated!")
+        if daily is not None:
+            console.print(f"  Daily: ${daily:.2f}")
+        if weekly is not None:
+            console.print(f"  Weekly: ${weekly:.2f}")
+
+
+@cost_app.command("clear-cache")
+def cost_clear_cache():
+    """Clear the response cache."""
+    from nanobot.config.loader import load_config
+    from nanobot.tracking.cache import ResponseCache
+    
+    config = load_config()
+    
+    if not hasattr(config.agents, 'cost_optimization') or not config.agents.cost_optimization.response_caching:
+        console.print("[yellow]Response caching is not enabled[/yellow]")
+        raise typer.Exit(1)
+    
+    cache_path = Path(config.agents.cost_optimization.cache_storage_path).expanduser()
+    if not cache_path.exists():
+        console.print("[dim]No cache to clear[/dim]")
+        raise typer.Exit()
+    
+    cache = ResponseCache(storage_path=cache_path)
+    stats = cache.get_stats()
+    
+    if not typer.confirm(f"Clear {stats.total_entries} cache entries?"):
+        raise typer.Exit()
+    
+    count = cache.invalidate()
+    cache.save()
+    
+    console.print(f"[green]✓[/green] Cleared {count} cache entries")
+
+
+# ============================================================================
+# Proactive Engine Commands (Phase 5B)
+# ============================================================================
+
+proactive_app = typer.Typer(help="Proactive AI engine management")
+app.add_typer(proactive_app, name="proactive")
+
+
+@proactive_app.command("status")
+def proactive_status():
+    """Show proactive engine status."""
+    from nanobot.config.loader import load_config
+    from nanobot.proactive.engine import ProactiveEngine
+    
+    config = load_config()
+    
+    if not hasattr(config.agents, 'proactive') or not config.agents.proactive.enabled:
+        console.print("[yellow]Proactive engine is not enabled[/yellow]")
+        raise typer.Exit(1)
+    
+    engine = ProactiveEngine(
+        workspace=config.workspace_path,
+        max_daily_actions=config.agents.proactive.max_daily_actions,
+        require_confirmation=config.agents.proactive.require_confirmation,
+        enable_reminders=config.agents.proactive.enable_reminders,
+        enable_suggestions=config.agents.proactive.enable_suggestions,
+        enable_automation=config.agents.proactive.enable_automation,
+        enable_insights=config.agents.proactive.enable_insights,
+        enable_anticipation=config.agents.proactive.enable_anticipation,
+        min_acceptance_rate=config.agents.proactive.min_acceptance_rate,
+        automation_allowlist=config.agents.proactive.automation_allowlist,
+    )
+    
+    status = engine.get_status()
+    
+    console.print(f"\n{__logo__} [bold]Proactive Engine Status[/bold]\n")
+    
+    console.print("  [bold]Enabled Action Types:[/bold]")
+    for action_type, enabled in status["enabled_types"].items():
+        icon = "[green]✓[/green]" if enabled else "[red]✗[/red]"
+        console.print(f"    {icon} {action_type}")
+    
+    console.print(f"\n  Max daily actions: {status['max_daily_actions']}")
+    console.print(f"  Require confirmation: {status['require_confirmation']}")
+    console.print(f"  Min acceptance rate: {status['min_acceptance_rate']:.0%}")
+    console.print(f"  Pending actions: {status['pending_actions']}")
+    console.print(f"\n  Intent tracker: {'Connected' if status['has_intent_tracker'] else 'Not connected'}")
+    console.print(f"  Memory evolution: {'Connected' if status['has_memory_evolution'] else 'Not connected'}")
+
+
+@proactive_app.command("pending")
+def proactive_pending(
+    user: str = typer.Option("default", "--user", "-u", help="User ID to filter"),
+    limit: int = typer.Option(20, "--limit", "-l", help="Max entries to show"),
+):
+    """List pending proactive actions."""
+    from nanobot.config.loader import load_config
+    from nanobot.proactive.engine import ProactiveEngine
+    
+    config = load_config()
+    
+    if not hasattr(config.agents, 'proactive'):
+        console.print("[yellow]Proactive engine is not enabled[/yellow]")
+        raise typer.Exit(1)
+    
+    engine = ProactiveEngine(workspace=config.workspace_path)
+    actions = engine.get_pending_actions(user_id=user)[:limit]
+    
+    console.print(f"\n{__logo__} [bold]Pending Proactive Actions[/bold]\n")
+    
+    if not actions:
+        console.print("[dim]No pending actions[/dim]")
+        raise typer.Exit()
+    
+    table = Table()
+    table.add_column("ID", style="dim")
+    table.add_column("Type")
+    table.add_column("Priority")
+    table.add_column("Title")
+    table.add_column("Status")
+    
+    for action in actions:
+        priority_color = "red" if action.priority > 0.7 else "yellow" if action.priority > 0.4 else "dim"
+        table.add_row(
+            action.id[:8],
+            action.type.value,
+            f"[{priority_color}]{action.priority:.1f}[/{priority_color}]",
+            action.title[:40],
+            action.status.value,
+        )
+    
+    console.print(table)
+
+
+@proactive_app.command("approve")
+def proactive_approve(
+    action_id: str = typer.Argument(..., help="Action ID to approve"),
+    feedback: str = typer.Option("", "--feedback", "-f", help="Optional feedback"),
+):
+    """Approve a pending proactive action."""
+    from nanobot.config.loader import load_config
+    from nanobot.proactive.engine import ProactiveEngine
+    
+    config = load_config()
+    engine = ProactiveEngine(workspace=config.workspace_path)
+    
+    # Find action
+    action = engine.get_action(action_id)
+    if not action:
+        # Try partial match
+        for a in engine.get_pending_actions():
+            if a.id.startswith(action_id):
+                action = a
+                break
+    
+    if not action:
+        console.print(f"[red]Action not found: {action_id}[/red]")
+        raise typer.Exit(1)
+    
+    if engine.mark_accepted(action.id, feedback):
+        console.print(f"[green]✓[/green] Approved action: {action.title}")
+        if action.type.value == "automation":
+            console.print("  [dim]Automation will be executed[/dim]")
+    else:
+        console.print(f"[red]Failed to approve action[/red]")
+
+
+@proactive_app.command("dismiss")
+def proactive_dismiss(
+    action_id: str = typer.Argument(..., help="Action ID to dismiss"),
+    feedback: str = typer.Option("", "--feedback", "-f", help="Optional feedback"),
+):
+    """Dismiss a pending proactive action."""
+    from nanobot.config.loader import load_config
+    from nanobot.proactive.engine import ProactiveEngine
+    
+    config = load_config()
+    engine = ProactiveEngine(workspace=config.workspace_path)
+    
+    # Find action
+    action = engine.get_action(action_id)
+    if not action:
+        for a in engine.get_pending_actions():
+            if a.id.startswith(action_id):
+                action = a
+                break
+    
+    if not action:
+        console.print(f"[red]Action not found: {action_id}[/red]")
+        raise typer.Exit(1)
+    
+    if engine.mark_dismissed(action.id, feedback):
+        console.print(f"[yellow]✗[/yellow] Dismissed action: {action.title}")
+    else:
+        console.print(f"[red]Failed to dismiss action[/red]")
+
+
+@proactive_app.command("stats")
+def proactive_stats():
+    """Show proactive action statistics."""
+    from nanobot.config.loader import load_config
+    from nanobot.proactive.engine import ProactiveEngine
+    
+    config = load_config()
+    engine = ProactiveEngine(workspace=config.workspace_path)
+    
+    stats = engine.get_action_stats()
+    
+    console.print(f"\n{__logo__} [bold]Proactive Action Statistics[/bold]\n")
+    
+    console.print(f"  Total actions:    {stats['total_actions']}")
+    console.print(f"  Pending:          {stats['pending_actions']}")
+    console.print(f"  Delivered:        {stats['total_delivered']}")
+    console.print(f"  Accepted:         {stats['total_accepted']}")
+    console.print(f"  Dismissed:        {stats['total_dismissed']}")
+    console.print(f"  Expired:          {stats['total_expired']}")
+    console.print(f"\n  [bold]Acceptance rate:[/bold] {stats['acceptance_rate']}")
+    
+    if stats['by_type']:
+        console.print("\n  [bold]By Action Type:[/bold]")
+        for action_type, type_stats in stats['by_type'].items():
+            console.print(f"    {action_type}: {type_stats['acceptance_rate']} acceptance")
+    
+    trigger_stats = stats.get('triggers', {})
+    console.print(f"\n  [bold]Triggers:[/bold]")
+    console.print(f"    Total:   {trigger_stats.get('total_triggers', 0)}")
+    console.print(f"    Enabled: {trigger_stats.get('enabled_triggers', 0)}")
+    console.print(f"    Fires:   {trigger_stats.get('total_fires', 0)}")
+
+
+# Trigger subcommands
+trigger_app = typer.Typer(help="Manage proactive triggers")
+proactive_app.add_typer(trigger_app, name="trigger")
+
+
+@trigger_app.command("list")
+def trigger_list():
+    """List all triggers."""
+    from nanobot.config.loader import load_config
+    from nanobot.proactive.triggers import TriggerManager
+    
+    config = load_config()
+    manager = TriggerManager(config.workspace_path / "proactive")
+    
+    triggers = manager.list_triggers(enabled_only=False)
+    
+    console.print(f"\n{__logo__} [bold]Proactive Triggers[/bold]\n")
+    
+    if not triggers:
+        console.print("[dim]No triggers configured[/dim]")
+        raise typer.Exit()
+    
+    table = Table()
+    table.add_column("ID", style="dim")
+    table.add_column("Name")
+    table.add_column("Type")
+    table.add_column("Condition")
+    table.add_column("Enabled")
+    table.add_column("Fires")
+    
+    for t in triggers:
+        enabled_str = "[green]✓[/green]" if t.enabled else "[red]✗[/red]"
+        table.add_row(
+            t.id,
+            t.name,
+            t.type.value,
+            t.condition[:30],
+            enabled_str,
+            str(t.fire_count),
+        )
+    
+    console.print(table)
+
+
+@trigger_app.command("add")
+def trigger_add(
+    name: str = typer.Argument(..., help="Trigger name"),
+    schedule: str = typer.Argument(..., help="Cron expression (e.g., '0 9 * * *' for 9 AM daily)"),
+    title: str = typer.Option("Reminder", "--title", "-t", help="Action title"),
+    content: str = typer.Option("", "--content", "-c", help="Action content"),
+    user: str = typer.Option("", "--user", "-u", help="User scope (empty = global)"),
+):
+    """Add a schedule-based trigger."""
+    from nanobot.config.loader import load_config
+    from nanobot.proactive.triggers import TriggerManager, create_schedule_trigger
+    
+    config = load_config()
+    manager = TriggerManager(config.workspace_path / "proactive")
+    
+    trigger = create_schedule_trigger(
+        name=name,
+        cron_expr=schedule,
+        action_template={
+            "type": "reminder",
+            "title": title,
+            "content": content or f"Scheduled: {name}",
+        },
+        user_id=user,
+    )
+    
+    trigger_id = manager.add_trigger(trigger)
+    console.print(f"[green]✓[/green] Created trigger: {trigger_id}")
+    console.print(f"  Name: {name}")
+    console.print(f"  Schedule: {schedule}")
+
+
+@trigger_app.command("remove")
+def trigger_remove(
+    trigger_id: str = typer.Argument(..., help="Trigger ID to remove"),
+):
+    """Remove a trigger."""
+    from nanobot.config.loader import load_config
+    from nanobot.proactive.triggers import TriggerManager
+    
+    config = load_config()
+    manager = TriggerManager(config.workspace_path / "proactive")
+    
+    if manager.remove_trigger(trigger_id):
+        console.print(f"[green]✓[/green] Removed trigger: {trigger_id}")
+    else:
+        console.print(f"[red]Trigger not found: {trigger_id}[/red]")
+
+
+@trigger_app.command("enable")
+def trigger_enable(
+    trigger_id: str = typer.Argument(..., help="Trigger ID"),
+    disable: bool = typer.Option(False, "--disable", "-d", help="Disable instead of enable"),
+):
+    """Enable or disable a trigger."""
+    from nanobot.config.loader import load_config
+    from nanobot.proactive.triggers import TriggerManager
+    
+    config = load_config()
+    manager = TriggerManager(config.workspace_path / "proactive")
+    
+    enabled = not disable
+    if manager.enable_trigger(trigger_id, enabled):
+        status = "enabled" if enabled else "disabled"
+        console.print(f"[green]✓[/green] Trigger {trigger_id} {status}")
+    else:
+        console.print(f"[red]Trigger not found: {trigger_id}[/red]")
 
 
 if __name__ == "__main__":

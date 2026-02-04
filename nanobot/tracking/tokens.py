@@ -49,6 +49,9 @@ class BudgetAlert:
     current_usage: int
     budget: int
     percentage: float
+    timestamp: datetime = field(default_factory=datetime.now)
+    alert_type: str = "token"  # "token" or "cost"
+    cost_usd: float = 0.0  # If cost-based alert
 
 
 class TokenTracker:
@@ -83,14 +86,20 @@ class TokenTracker:
     def __init__(
         self,
         storage_path: Path | None = None,
-        daily_budget: int = 0,  # 0 = unlimited
-        weekly_budget: int = 0,
+        daily_budget: int = 0,  # 0 = unlimited (tokens)
+        weekly_budget: int = 0,  # (tokens)
+        daily_budget_usd: float = 0.0,  # 0 = unlimited (USD)
+        weekly_budget_usd: float = 0.0,  # (USD)
         alert_threshold: float = 0.8,
+        alert_callback: Any = None,  # Optional callback for alerts
     ):
         self.storage_path = storage_path
         self.daily_budget = daily_budget
         self.weekly_budget = weekly_budget
+        self.daily_budget_usd = daily_budget_usd
+        self.weekly_budget_usd = weekly_budget_usd
         self.alert_threshold = alert_threshold
+        self.alert_callback = alert_callback
         
         # Current session
         self._session = UsageStats()
@@ -101,6 +110,8 @@ class TokenTracker:
         
         # Alerts
         self._alerts: list[BudgetAlert] = []
+        self._alert_history: list[BudgetAlert] = []
+        self._last_alert_time: dict[str, datetime] = {}  # Dedup key -> time
         
         if storage_path:
             self._load()
@@ -162,49 +173,112 @@ class TokenTracker:
         """Check budget limits and generate alerts."""
         today = datetime.now().strftime("%Y-%m-%d")
         daily = self._daily.get(today, UsageStats())
+        weekly_stats = self.get_weekly_stats()
         
-        # Daily budget check
+        # Daily token budget check
         if self.daily_budget > 0:
             usage_pct = daily.total_tokens / self.daily_budget
-            
-            if usage_pct >= 1.0:
-                self._alerts.append(BudgetAlert(
-                    level="critical",
-                    message="Daily budget exceeded",
-                    current_usage=daily.total_tokens,
-                    budget=self.daily_budget,
-                    percentage=usage_pct,
-                ))
-            elif usage_pct >= self.alert_threshold:
-                self._alerts.append(BudgetAlert(
-                    level="warning",
-                    message=f"Daily budget at {usage_pct*100:.0f}%",
-                    current_usage=daily.total_tokens,
-                    budget=self.daily_budget,
-                    percentage=usage_pct,
-                ))
+            self._check_and_alert(
+                key="daily_token",
+                level="critical" if usage_pct >= 1.0 else "warning",
+                message="Daily token budget exceeded" if usage_pct >= 1.0 else f"Daily token budget at {usage_pct*100:.0f}%",
+                current_usage=daily.total_tokens,
+                budget=self.daily_budget,
+                percentage=usage_pct,
+                threshold=self.alert_threshold,
+                alert_type="token",
+            )
         
-        # Weekly budget check
+        # Weekly token budget check
         if self.weekly_budget > 0:
             weekly_total = self._get_weekly_total()
             usage_pct = weekly_total / self.weekly_budget
-            
-            if usage_pct >= 1.0:
-                self._alerts.append(BudgetAlert(
-                    level="critical",
-                    message="Weekly budget exceeded",
-                    current_usage=weekly_total,
-                    budget=self.weekly_budget,
-                    percentage=usage_pct,
-                ))
-            elif usage_pct >= self.alert_threshold:
-                self._alerts.append(BudgetAlert(
-                    level="warning",
-                    message=f"Weekly budget at {usage_pct*100:.0f}%",
-                    current_usage=weekly_total,
-                    budget=self.weekly_budget,
-                    percentage=usage_pct,
-                ))
+            self._check_and_alert(
+                key="weekly_token",
+                level="critical" if usage_pct >= 1.0 else "warning",
+                message="Weekly token budget exceeded" if usage_pct >= 1.0 else f"Weekly token budget at {usage_pct*100:.0f}%",
+                current_usage=weekly_total,
+                budget=self.weekly_budget,
+                percentage=usage_pct,
+                threshold=self.alert_threshold,
+                alert_type="token",
+            )
+        
+        # Daily USD budget check
+        if self.daily_budget_usd > 0:
+            daily_cost = self.estimate_cost(daily)
+            usage_pct = daily_cost / self.daily_budget_usd
+            self._check_and_alert(
+                key="daily_usd",
+                level="critical" if usage_pct >= 1.0 else "warning",
+                message=f"Daily cost budget exceeded (${daily_cost:.2f}/${self.daily_budget_usd:.2f})" if usage_pct >= 1.0 else f"Daily cost at {usage_pct*100:.0f}% (${daily_cost:.2f})",
+                current_usage=int(daily_cost * 100),  # Store as cents
+                budget=int(self.daily_budget_usd * 100),
+                percentage=usage_pct,
+                threshold=self.alert_threshold,
+                alert_type="cost",
+                cost_usd=daily_cost,
+            )
+        
+        # Weekly USD budget check
+        if self.weekly_budget_usd > 0:
+            weekly_cost = self.estimate_cost(weekly_stats)
+            usage_pct = weekly_cost / self.weekly_budget_usd
+            self._check_and_alert(
+                key="weekly_usd",
+                level="critical" if usage_pct >= 1.0 else "warning",
+                message=f"Weekly cost budget exceeded (${weekly_cost:.2f}/${self.weekly_budget_usd:.2f})" if usage_pct >= 1.0 else f"Weekly cost at {usage_pct*100:.0f}% (${weekly_cost:.2f})",
+                current_usage=int(weekly_cost * 100),
+                budget=int(self.weekly_budget_usd * 100),
+                percentage=usage_pct,
+                threshold=self.alert_threshold,
+                alert_type="cost",
+                cost_usd=weekly_cost,
+            )
+    
+    def _check_and_alert(
+        self,
+        key: str,
+        level: str,
+        message: str,
+        current_usage: int,
+        budget: int,
+        percentage: float,
+        threshold: float,
+        alert_type: str = "token",
+        cost_usd: float = 0.0,
+    ) -> None:
+        """Check if alert should be generated (with deduplication)."""
+        if percentage < threshold:
+            return  # Below threshold
+        
+        # Deduplication: don't alert for same key within 1 hour
+        now = datetime.now()
+        last_alert = self._last_alert_time.get(key)
+        if last_alert and (now - last_alert).seconds < 3600:
+            return
+        
+        alert = BudgetAlert(
+            level=level,
+            message=message,
+            current_usage=current_usage,
+            budget=budget,
+            percentage=percentage,
+            timestamp=now,
+            alert_type=alert_type,
+            cost_usd=cost_usd,
+        )
+        
+        self._alerts.append(alert)
+        self._alert_history.append(alert)
+        self._last_alert_time[key] = now
+        
+        # Call callback if registered
+        if self.alert_callback:
+            try:
+                self.alert_callback(alert)
+            except Exception:
+                pass  # Don't let callback errors break tracking
     
     def _get_weekly_total(self) -> int:
         """Get total tokens for the current week."""

@@ -5,7 +5,8 @@ Provides:
 - Token usage tracking
 - Cost estimation
 - Budget management
-- Optimization suggestions
+- Response caching
+- Cost optimization
 """
 
 from nanobot.tracking.tokens import (
@@ -15,7 +16,13 @@ from nanobot.tracking.tokens import (
 )
 from nanobot.tracking.optimizer import (
     SelfOptimizer,
+    CostOptimizer,
     OptimizationSuggestion,
+)
+from nanobot.tracking.cache import (
+    ResponseCache,
+    CacheEntry,
+    CacheStats,
 )
 
 __all__ = [
@@ -23,5 +30,9 @@ __all__ = [
     "UsageStats",
     "BudgetAlert",
     "SelfOptimizer",
+    "CostOptimizer",
     "OptimizationSuggestion",
+    "ResponseCache",
+    "CacheEntry",
+    "CacheStats",
 ]

@@ -20,6 +20,8 @@ import { LoginPage } from '@/components/auth/LoginPage'
 import { SetupPage } from '@/components/auth/SetupPage'
 import { useUIStore } from '@/stores/uiStore'
 import { WebSocketProvider } from '@/hooks/useWebSocket'
+import { ToastProvider } from '@/components/ui/Toast'
+import { SystemProvider } from '@/contexts/SystemContext'
 import { Loader2 } from 'lucide-react'
 
 function App() {
@@ -120,50 +122,53 @@ function App() {
     )
   }
 
-  // Auth required but not configured - show setup
-  if (authStatus?.configured === false) {
-    // Check if we should show setup (first time) or just allow access (no auth mode)
-    // For now, if not configured, allow direct access (backwards compatible)
-    // In production, you might want to force setup
+  // First-run: Show setup page if setup hasn't been completed
+  // This ensures users configure auth before using the dashboard
+  if (authStatus?.setup_complete === false) {
+    return <SetupPage onSetupComplete={handleSetupComplete} />
   }
 
-  // Show setup page if auth is not configured and we want to require it
-  // For now, we'll only require auth if configured
+  // Auth configured but not authenticated - show login
   if (authStatus?.configured && !isAuthenticated) {
     return <LoginPage onLoginSuccess={handleLoginSuccess} />
   }
 
-  // Note: Setup is triggered from Settings panel or CLI, not automatically
+  // Note: If auth is not configured (setup_complete=true but no password),
+  // allow direct access (backwards compatible)
 
   return (
-    <WebSocketProvider>
-      <div className="flex h-screen bg-giga-dark overflow-hidden">
-        {/* Sidebar - Hidden on mobile */}
-        <Sidebar
-          activeView={activeView}
-          onViewChange={setActiveView}
-          className="hidden md:flex"
-        />
+    <ToastProvider>
+      <SystemProvider>
+        <WebSocketProvider>
+          <div className="flex h-screen bg-giga-dark overflow-hidden">
+            {/* Sidebar - Hidden on mobile */}
+            <Sidebar
+              activeView={activeView}
+              onViewChange={setActiveView}
+              className="hidden md:flex"
+            />
 
-        {/* Main Content Area */}
-        <div className="flex-1 flex flex-col min-w-0">
-          {/* Header */}
-          <Header />
+            {/* Main Content Area */}
+            <div className="flex-1 flex flex-col min-w-0">
+              {/* Header */}
+              <Header />
 
-          {/* Main Content */}
-          <main className="flex-1 overflow-hidden">
-            {renderMainContent()}
-          </main>
-        </div>
+              {/* Main Content */}
+              <main className="flex-1 overflow-hidden">
+                {renderMainContent()}
+              </main>
+            </div>
 
-        {/* Bottom Navigation - Mobile only */}
-        <BottomNav
-          activeView={activeView}
-          onViewChange={setActiveView}
-          className="md:hidden"
-        />
-      </div>
-    </WebSocketProvider>
+            {/* Bottom Navigation - Mobile only */}
+            <BottomNav
+              activeView={activeView}
+              onViewChange={setActiveView}
+              className="md:hidden"
+            />
+          </div>
+        </WebSocketProvider>
+      </SystemProvider>
+    </ToastProvider>
   )
 }
 

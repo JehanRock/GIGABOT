@@ -11,11 +11,19 @@ interface Model {
 }
 
 const models: Model[] = [
-  { id: 'gpt-4-turbo', name: 'GPT-4 Turbo', provider: 'OpenAI', tier: 'tier1', description: 'Most capable, best for complex tasks' },
-  { id: 'claude-3-opus', name: 'Claude 3 Opus', provider: 'Anthropic', tier: 'tier1', description: 'Excellent reasoning and analysis' },
-  { id: 'gpt-4', name: 'GPT-4', provider: 'OpenAI', tier: 'tier1', description: 'High quality, balanced performance' },
-  { id: 'claude-3-sonnet', name: 'Claude 3 Sonnet', provider: 'Anthropic', tier: 'tier2', description: 'Fast and efficient' },
-  { id: 'gpt-3.5-turbo', name: 'GPT-3.5 Turbo', provider: 'OpenAI', tier: 'tier3', description: 'Quick responses, lower cost' },
+  // Tier 1 - Flagship Models
+  { id: 'anthropic/claude-opus-4-5', name: 'Claude Opus 4.5', provider: 'Anthropic', tier: 'tier1', description: 'Top-tier reasoning and analysis' },
+  { id: 'anthropic/claude-sonnet-4-5', name: 'Claude Sonnet 4.5', provider: 'Anthropic', tier: 'tier1', description: 'Most used, balanced price/performance' },
+  { id: 'google/gemini-3-pro-preview', name: 'Gemini 3 Pro', provider: 'Google', tier: 'tier1', description: 'Flagship Google model, multimodal' },
+  { id: 'openai/gpt-4o', name: 'GPT-4o', provider: 'OpenAI', tier: 'tier1', description: 'OpenAI flagship, multimodal' },
+  // Tier 2 - Fast & Efficient
+  { id: 'google/gemini-3-flash-preview', name: 'Gemini 3 Flash', provider: 'Google', tier: 'tier2', description: 'Fast and efficient, great for quick tasks' },
+  { id: 'anthropic/claude-3.5-haiku', name: 'Claude 3.5 Haiku', provider: 'Anthropic', tier: 'tier2', description: 'Ultra-fast, great for simple tasks' },
+  { id: 'openai/gpt-4o-mini', name: 'GPT-4o Mini', provider: 'OpenAI', tier: 'tier2', description: 'Fast and cheap, good for quick tasks' },
+  { id: 'deepseek/deepseek-chat', name: 'DeepSeek Chat', provider: 'DeepSeek', tier: 'tier2', description: 'Strong coding model, low cost' },
+  // Tier 3 - Budget
+  { id: 'google/gemini-2.0-flash-exp:free', name: 'Gemini 2.0 Flash (Free)', provider: 'Google', tier: 'tier3', description: 'Free tier, limited rate' },
+  { id: 'meta-llama/llama-3.3-70b-instruct', name: 'Llama 3.3 70B', provider: 'Meta', tier: 'tier3', description: 'Open source, good general use' },
 ]
 
 interface ModelSelectorProps {

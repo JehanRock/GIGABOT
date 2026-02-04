@@ -32,6 +32,9 @@ if TYPE_CHECKING:
     from nanobot.profiler.interviewer import ModelInterviewer
     from nanobot.agent.tool_manager import ToolCallManager
     from nanobot.agent.tool_advisor import ToolAdvisor
+    from nanobot.intent.tracker import IntentTracker, UserIntent
+    from nanobot.tracking.cache import ResponseCache
+    from nanobot.tracking.optimizer import CostOptimizer
 
 
 class AgentLoop:
@@ -223,6 +226,55 @@ class AgentLoop:
                 )
                 logger.info("Tool advisor enabled for adaptive tool selection")
         
+        # Intent tracker (proactive AI)
+        self.intent_tracker: "IntentTracker | None" = None
+        self.current_intent: "UserIntent | None" = None
+        if config and hasattr(config.agents, 'intent_tracking') and config.agents.intent_tracking.enabled:
+            from nanobot.intent.tracker import IntentTracker
+            self.intent_tracker = IntentTracker(
+                workspace=workspace,
+                provider=provider,
+                model=config.agents.intent_tracking.analysis_model,
+            )
+            logger.info("Intent tracker enabled for proactive AI")
+        
+        # Response cache and cost optimizer (Phase 5B)
+        self.response_cache: "ResponseCache | None" = None
+        self.cost_optimizer: "CostOptimizer | None" = None
+        if config and hasattr(config.agents, 'cost_optimization') and config.agents.cost_optimization.enabled:
+            from nanobot.tracking.cache import ResponseCache
+            from nanobot.tracking.optimizer import CostOptimizer
+            from nanobot.tracking.tokens import TokenTracker
+            
+            cost_config = config.agents.cost_optimization
+            
+            if cost_config.response_caching:
+                cache_path = Path(cost_config.cache_storage_path).expanduser()
+                self.response_cache = ResponseCache(
+                    max_size=cost_config.cache_max_size,
+                    default_ttl=cost_config.cache_ttl_seconds,
+                    storage_path=cache_path,
+                )
+                logger.info(f"Response cache enabled (max {cost_config.cache_max_size} entries)")
+            
+            # Initialize cost optimizer (needs token tracker)
+            # The token tracker might be shared with the provider
+            tracker = getattr(provider, 'token_tracker', None)
+            if tracker is None:
+                # Create a standalone tracker
+                tracker = TokenTracker(
+                    daily_budget_usd=cost_config.daily_budget_usd,
+                    weekly_budget_usd=cost_config.weekly_budget_usd,
+                )
+            
+            self.cost_optimizer = CostOptimizer(
+                tracker=tracker,
+                cache=self.response_cache,
+                daily_budget_usd=cost_config.daily_budget_usd,
+                weekly_budget_usd=cost_config.weekly_budget_usd,
+            )
+            logger.info("Cost optimizer enabled")
+        
         self._running = False
         self._auto_interview_pending: set[str] = set()  # Models pending interview
         self._register_default_tools()
@@ -307,12 +359,19 @@ class AgentLoop:
         self._running = False
         logger.info("Agent loop stopping")
     
-    async def _process_message(self, msg: InboundMessage) -> OutboundMessage | None:
+    async def _process_message(
+        self, 
+        msg: InboundMessage,
+        model_override: str | None = None,
+        thinking_level: str = "medium",
+    ) -> OutboundMessage | None:
         """
         Process a single inbound message.
         
         Args:
             msg: The inbound message to process.
+            model_override: Optional model to use (bypasses tiered routing).
+            thinking_level: Reasoning depth - 'low', 'medium', or 'high'.
         
         Returns:
             The response message, or None if no response needed.
@@ -326,6 +385,22 @@ class AgentLoop:
         
         # Get or create session
         session = self.sessions.get_or_create(msg.session_key)
+        
+        # Capture intent (proactive AI - non-blocking)
+        if self.intent_tracker:
+            try:
+                self.current_intent = await self.intent_tracker.capture_intent(
+                    message=msg.content,
+                    session_id=msg.session_key,
+                    user_id=msg.sender_id or "default",
+                )
+                logger.debug(
+                    f"Intent captured: {self.current_intent.category} - "
+                    f"{self.current_intent.inferred_goal[:50]}..."
+                )
+            except Exception as e:
+                logger.warning(f"Intent capture failed: {e}")
+                self.current_intent = None
         
         # Update tool contexts
         message_tool = self.tools.get("message")
@@ -349,11 +424,15 @@ class AgentLoop:
                     content=team_result
                 )
         
-        # Determine model via tiered routing (if enabled)
+        # Determine model via tiered routing (if enabled) or use override
         model_to_use = self.default_model
         routing_decision = None
         
-        if self.router:
+        if model_override:
+            # User-selected model override - bypass tiered routing
+            model_to_use = model_override
+            logger.info(f"Using user-selected model override: {model_to_use}")
+        elif self.router:
             routing_decision = self.router.route(msg.content)
             model_to_use = routing_decision.model
             logger.info(
@@ -399,6 +478,29 @@ class AgentLoop:
         # Agent loop
         iteration = 0
         final_content = None
+        cache_hit = False
+        
+        # Check cache before starting iteration (for simple text-only queries)
+        if self.response_cache and self.cost_optimizer:
+            task_type = routing_decision.classification.task_type.value if routing_decision else ""
+            if self.cost_optimizer.should_cache(msg.content, task_type):
+                cached_response = self.response_cache.get(msg.content, model_to_use)
+                if cached_response:
+                    logger.info(f"Cache hit for query (saved tokens)")
+                    cache_hit = True
+                    # Return cached response directly
+                    session.add_message("user", msg.content)
+                    session.add_message("assistant", cached_response)
+                    self.sessions.save(session)
+                    return OutboundMessage(
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                        content=cached_response
+                    )
+        
+        # Map thinking level to temperature
+        thinking_temps = {"low": 0.9, "medium": 0.7, "high": 0.3}
+        temperature = thinking_temps.get(thinking_level, 0.7)
         
         while iteration < self.max_iterations:
             iteration += 1
@@ -409,11 +511,12 @@ class AgentLoop:
                     messages, self.provider, session_id=msg.session_key
                 )
             
-            # Call LLM with routed model
+            # Call LLM with routed model and thinking-adjusted temperature
             response = await self.provider.chat(
                 messages=messages,
                 tools=self.tools.get_definitions(),
-                model=model_to_use
+                model=model_to_use,
+                temperature=temperature,
             )
             
             # Track model health for routing
@@ -501,6 +604,13 @@ class AgentLoop:
         
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
+        
+        # Cache response if it was a simple single-turn response (no tools used)
+        if self.response_cache and self.cost_optimizer and iteration == 1:
+            task_type = routing_decision.classification.task_type.value if routing_decision else ""
+            if self.cost_optimizer.should_cache(msg.content, task_type):
+                self.response_cache.set(msg.content, final_content, model_to_use)
+                logger.debug(f"Cached response for query")
         
         # Save to session
         session.add_message("user", msg.content)
@@ -616,13 +726,21 @@ class AgentLoop:
             content=final_content
         )
     
-    async def process_direct(self, content: str, session_key: str = "cli:direct") -> str:
+    async def process_direct(
+        self, 
+        content: str, 
+        session_key: str = "cli:direct",
+        model: str | None = None,
+        thinking_level: str = "medium",
+    ) -> str:
         """
-        Process a message directly (for CLI usage).
+        Process a message directly (for CLI/WebUI usage).
         
         Args:
             content: The message content.
             session_key: Session identifier.
+            model: Optional model override (bypasses tiered routing).
+            thinking_level: Reasoning depth - 'low', 'medium', or 'high'.
         
         Returns:
             The agent's response.
@@ -634,7 +752,11 @@ class AgentLoop:
             content=content
         )
         
-        response = await self._process_message(msg)
+        response = await self._process_message(
+            msg, 
+            model_override=model,
+            thinking_level=thinking_level,
+        )
         return response.content if response else ""
     
     def _is_ui_task(self, content: str) -> bool:
@@ -834,7 +956,7 @@ class AgentLoop:
             # Run quick assessment (faster than full interview)
             profile = await self.model_interviewer.quick_assessment(model_id)
             self.model_registry.save_profile(profile)
-            logger.info(f"Auto-interview complete for {model_id}, overall score: {profile.capabilities.overall_score:.2f}")
+            logger.info(f"Auto-interview complete for {model_id}, overall score: {profile.get_overall_score():.2f}")
         except Exception as e:
             logger.warning(f"Auto-interview failed for {model_id}: {e}")
         finally:

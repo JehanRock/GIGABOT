@@ -6,9 +6,9 @@ import { cn } from '@/lib/utils'
 const mockConfig = {
   providers: {
     default_provider: 'openrouter',
-    tier1_model: 'openai/gpt-4-turbo',
-    tier2_model: 'anthropic/claude-3-sonnet',
-    tier3_model: 'openai/gpt-3.5-turbo',
+    tier1_model: 'moonshot/kimi-k2.5',
+    tier2_model: 'google/gemini-3-flash',
+    tier3_model: 'deepseek/deepseek-v3.2',
   },
   memory: {
     enabled: true,

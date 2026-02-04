@@ -92,7 +92,7 @@ function MessageBubble({ message }: MessageBubbleProps) {
 
   return (
     <div className={cn(
-      'flex items-start gap-3',
+      'flex items-start gap-3 w-full',
       isUser && 'flex-row-reverse'
     )}>
       {/* Avatar */}

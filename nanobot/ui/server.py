@@ -23,6 +23,7 @@ from nanobot.security.auth import DashboardAuth
 
 if TYPE_CHECKING:
     from nanobot.nodes.manager import NodeManager
+    from nanobot.cron.service import CronService
 
 try:
     from aiohttp import web
@@ -54,6 +55,7 @@ class UIServer:
         sessions: Any = None,
         channels: Any = None,
         node_manager: "NodeManager | None" = None,
+        cron_service: "CronService | None" = None,
     ):
         if not AIOHTTP_AVAILABLE:
             raise ImportError(
@@ -71,6 +73,7 @@ class UIServer:
         self._sessions = sessions
         self._channels = channels
         self._node_manager = node_manager
+        self._cron_service = cron_service
         
         self._app: web.Application | None = None
         self._runner: web.AppRunner | None = None
@@ -91,6 +94,7 @@ class UIServer:
             sessions=sessions,
             channels=channels,
             save_config=self._save_config,
+            cron_service=cron_service,
         )
         
         # WebSocket connections
@@ -142,6 +146,7 @@ class UIServer:
         sessions: Any = None,
         channels: Any = None,
         node_manager: "NodeManager | None" = None,
+        cron_service: "CronService | None" = None,
     ) -> None:
         """Update dependencies after initialization."""
         if config:
@@ -154,6 +159,8 @@ class UIServer:
             self._channels = channels
         if node_manager:
             self._node_manager = node_manager
+        if cron_service:
+            self._cron_service = cron_service
         
         # Recreate API routes
         self._api_routes = create_api_routes(
@@ -162,6 +169,7 @@ class UIServer:
             sessions=self._sessions,
             channels=self._channels,
             save_config=self._save_config,
+            cron_service=self._cron_service,
         )
     
     def set_node_manager(self, node_manager: "NodeManager") -> None:
@@ -200,6 +208,7 @@ class UIServer:
         """Setup HTTP routes."""
         # API routes
         self._app.router.add_get("/api/status", self._handle_status)
+        self._app.router.add_get("/api/system/status", self._handle_system_status)
         self._app.router.add_get("/api/config", self._handle_config)
         self._app.router.add_post("/api/chat", self._handle_chat)
         self._app.router.add_get("/api/sessions", self._handle_sessions)
@@ -220,6 +229,29 @@ class UIServer:
         self._app.router.add_put("/api/gateways/{gateway_id}", self._handle_update_gateway)
         self._app.router.add_delete("/api/gateways/{gateway_id}", self._handle_delete_gateway)
         self._app.router.add_post("/api/gateways/{gateway_id}/test", self._handle_test_gateway)
+        
+        # Provider configuration API
+        self._app.router.add_get("/api/providers", self._handle_get_providers)
+        self._app.router.add_put("/api/providers/{provider}", self._handle_update_provider)
+        
+        # Routing configuration API
+        self._app.router.add_get("/api/routing", self._handle_get_routing)
+        self._app.router.add_put("/api/routing", self._handle_update_routing)
+        
+        # Memory configuration API
+        self._app.router.add_get("/api/memory/config", self._handle_get_memory_config)
+        self._app.router.add_put("/api/memory/config", self._handle_update_memory_config)
+        
+        # Team configuration API
+        self._app.router.add_get("/api/team", self._handle_get_team_config)
+        self._app.router.add_put("/api/team", self._handle_update_team_config)
+        
+        # Cron Jobs API
+        self._app.router.add_get("/api/cron", self._handle_get_cron_jobs)
+        self._app.router.add_post("/api/cron", self._handle_add_cron_job)
+        self._app.router.add_post("/api/cron/{job_id}/run", self._handle_run_cron_job)
+        self._app.router.add_put("/api/cron/{job_id}", self._handle_update_cron_job)
+        self._app.router.add_delete("/api/cron/{job_id}", self._handle_delete_cron_job)
         
         # Authentication API
         self._app.router.add_get("/api/auth/status", self._handle_auth_status)
@@ -329,6 +361,90 @@ class UIServer:
         
         return web.json_response(status)
     
+    async def _handle_system_status(self, request: web.Request) -> web.Response:
+        """
+        Handle system status request for frontend.
+        
+        Returns comprehensive system state for the dashboard.
+        """
+        config = self._config
+        
+        # Determine agent state based on chat handler presence
+        has_chat_handler = self._chat_handler is not None
+        has_api_key = self._has_any_api_key()
+        
+        if has_api_key and has_chat_handler:
+            agent_state = "ready"
+            is_ready = True
+        elif has_api_key and not has_chat_handler:
+            agent_state = "initializing"
+            is_ready = False
+        else:
+            agent_state = "uninitialized"
+            is_ready = False
+        
+        # Get configured providers
+        configured_providers = []
+        primary_provider = None
+        
+        if config:
+            providers = config.providers
+            if providers.openrouter.api_key:
+                configured_providers.append("openrouter")
+                if not primary_provider:
+                    primary_provider = "openrouter"
+            if providers.anthropic.api_key:
+                configured_providers.append("anthropic")
+                if not primary_provider:
+                    primary_provider = "anthropic"
+            if providers.openai.api_key:
+                configured_providers.append("openai")
+                if not primary_provider:
+                    primary_provider = "openai"
+            if providers.moonshot.api_key:
+                configured_providers.append("moonshot")
+            if providers.deepseek.api_key:
+                configured_providers.append("deepseek")
+        
+        return web.json_response({
+            "agent_state": agent_state,
+            "is_ready": is_ready,
+            "has_api_key": has_api_key,
+            "configured_providers": configured_providers,
+            "primary_provider": primary_provider,
+            "version": "0.1.0",
+            "error": None,
+            "model": config.agents.defaults.model if config else None,
+            "workspace": str(config.workspace_path) if config else None,
+            "tiered_routing_enabled": config.agents.tiered_routing.enabled if config else False,
+            "memory_enabled": config.agents.memory.enabled if config else False,
+        })
+    
+    def _has_any_api_key(self) -> bool:
+        """Check if any API key is configured."""
+        import os
+        
+        if self._config:
+            providers = self._config.providers
+            if providers.openrouter.api_key:
+                return True
+            if providers.anthropic.api_key:
+                return True
+            if providers.openai.api_key:
+                return True
+            if providers.moonshot.api_key:
+                return True
+            if providers.deepseek.api_key:
+                return True
+        
+        # Check environment
+        env_vars = ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"]
+        for var in env_vars:
+            if os.environ.get(var, "").strip():
+                return True
+        
+        return False
+    
     async def _handle_config(self, request: web.Request) -> web.Response:
         """Handle config request."""
         config = await self._api_routes["config"]()
@@ -415,6 +531,168 @@ class UIServer:
             return web.json_response(result)
         except Exception as e:
             logger.error(f"Test gateway error: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    # Provider configuration handlers
+    async def _handle_get_providers(self, request: web.Request) -> web.Response:
+        """Handle get providers request."""
+        try:
+            result = await self._api_routes["providers"]()
+            return web.json_response(result)
+        except Exception as e:
+            logger.error(f"Get providers error: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def _handle_update_provider(self, request: web.Request) -> web.Response:
+        """Handle update provider request."""
+        try:
+            provider = request.match_info.get("provider")
+            data = await request.json()
+            result = await self._api_routes["update_provider"](provider, data)
+            
+            if "error" in result:
+                status = 404 if "Unknown" in result.get("error", "") else 400
+                return web.json_response(result, status=status)
+            
+            return web.json_response(result)
+        except Exception as e:
+            logger.error(f"Update provider error: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    # Routing configuration handlers
+    async def _handle_get_routing(self, request: web.Request) -> web.Response:
+        """Handle get routing request."""
+        try:
+            result = await self._api_routes["routing"]()
+            return web.json_response(result)
+        except Exception as e:
+            logger.error(f"Get routing error: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def _handle_update_routing(self, request: web.Request) -> web.Response:
+        """Handle update routing request."""
+        try:
+            data = await request.json()
+            result = await self._api_routes["update_routing"](data)
+            return web.json_response(result)
+        except Exception as e:
+            logger.error(f"Update routing error: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    # Memory configuration handlers
+    async def _handle_get_memory_config(self, request: web.Request) -> web.Response:
+        """Handle get memory config request."""
+        try:
+            result = await self._api_routes["memory_config"]()
+            return web.json_response(result)
+        except Exception as e:
+            logger.error(f"Get memory config error: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def _handle_update_memory_config(self, request: web.Request) -> web.Response:
+        """Handle update memory config request."""
+        try:
+            data = await request.json()
+            result = await self._api_routes["update_memory_config"](data)
+            return web.json_response(result)
+        except Exception as e:
+            logger.error(f"Update memory config error: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    # Team configuration handlers
+    async def _handle_get_team_config(self, request: web.Request) -> web.Response:
+        """Handle get team config request."""
+        try:
+            result = await self._api_routes["team_config"]()
+            return web.json_response(result)
+        except Exception as e:
+            logger.error(f"Get team config error: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def _handle_update_team_config(self, request: web.Request) -> web.Response:
+        """Handle update team config request."""
+        try:
+            data = await request.json()
+            result = await self._api_routes["update_team_config"](data)
+            return web.json_response(result)
+        except Exception as e:
+            logger.error(f"Update team config error: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    # Cron Jobs handlers
+    async def _handle_get_cron_jobs(self, request: web.Request) -> web.Response:
+        """Handle get cron jobs request."""
+        try:
+            result = await self._api_routes["cron_jobs"]()
+            return web.json_response(result)
+        except Exception as e:
+            logger.error(f"Get cron jobs error: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def _handle_add_cron_job(self, request: web.Request) -> web.Response:
+        """Handle add cron job request."""
+        try:
+            data = await request.json()
+            result = await self._api_routes["add_cron_job"](data)
+            
+            if "error" in result:
+                return web.json_response(result, status=400)
+            
+            return web.json_response(result, status=201)
+        except Exception as e:
+            logger.error(f"Add cron job error: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def _handle_run_cron_job(self, request: web.Request) -> web.Response:
+        """Handle run cron job request."""
+        try:
+            job_id = request.match_info.get("job_id")
+            data = {}
+            try:
+                data = await request.json()
+            except Exception:
+                pass  # Optional body
+            
+            force = data.get("force", False)
+            result = await self._api_routes["run_cron_job"](job_id, force)
+            
+            if "error" in result:
+                status = 404 if "not found" in result.get("error", "").lower() else 400
+                return web.json_response(result, status=status)
+            
+            return web.json_response(result)
+        except Exception as e:
+            logger.error(f"Run cron job error: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def _handle_update_cron_job(self, request: web.Request) -> web.Response:
+        """Handle update cron job request."""
+        try:
+            job_id = request.match_info.get("job_id")
+            data = await request.json()
+            result = await self._api_routes["update_cron_job"](job_id, data)
+            
+            if "error" in result:
+                status = 404 if "not found" in result.get("error", "").lower() else 400
+                return web.json_response(result, status=status)
+            
+            return web.json_response(result)
+        except Exception as e:
+            logger.error(f"Update cron job error: {e}")
+            return web.json_response({"error": str(e)}, status=500)
+    
+    async def _handle_delete_cron_job(self, request: web.Request) -> web.Response:
+        """Handle delete cron job request."""
+        try:
+            job_id = request.match_info.get("job_id")
+            result = await self._api_routes["delete_cron_job"](job_id)
+            
+            if "error" in result:
+                return web.json_response(result, status=404)
+            
+            return web.json_response(result)
+        except Exception as e:
+            logger.error(f"Delete cron job error: {e}")
             return web.json_response({"error": str(e)}, status=500)
     
     # Authentication handlers
@@ -706,13 +984,21 @@ class UIServer:
         if action == "chat":
             message = data.get("message", "")
             session_id = data.get("session_id", "webui:ws")
+            model = data.get("model")  # Optional model override
+            thinking_level = data.get("thinking_level", "medium")  # low/medium/high
             
             if self._chat_handler:
                 # Send typing indicator
                 await ws.send_json({"type": "typing", "status": True})
                 
                 try:
-                    response = await self._chat_handler(message, session_id)
+                    # Pass model and thinking_level as kwargs
+                    response = await self._chat_handler(
+                        message, 
+                        session_id,
+                        model=model,
+                        thinking_level=thinking_level
+                    )
                     
                     await ws.send_json({
                         "type": "response",
@@ -883,7 +1169,7 @@ class UIServer:
         return web.Response(text=html, content_type="text/html")
     
     def _get_dashboard_html(self) -> str:
-        """Get embedded dashboard HTML."""
+        """Get simple fallback HTML when React build is not available."""
         return """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -892,550 +1178,66 @@ class UIServer:
     <title>GigaBot Dashboard</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f0f1a; color: #eee; min-height: 100vh; }
-        .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
-        header { display: flex; justify-content: space-between; align-items: center; padding: 20px 0; border-bottom: 1px solid #2a2a40; }
-        h1 { font-size: 28px; background: linear-gradient(135deg, #6366f1, #8b5cf6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-        .logo { display: flex; align-items: center; gap: 12px; }
-        .logo-icon { font-size: 32px; }
-        .status { display: flex; align-items: center; gap: 8px; background: #1a1a2e; padding: 8px 16px; border-radius: 20px; }
-        .status-dot { width: 10px; height: 10px; border-radius: 50%; background: #4ade80; animation: pulse 2s infinite; }
-        .status-dot.offline { background: #ef4444; animation: none; }
-        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-        .tabs { display: flex; gap: 8px; margin: 24px 0; background: #1a1a2e; padding: 6px; border-radius: 12px; width: fit-content; }
-        .tab { padding: 10px 20px; background: transparent; border: none; color: #888; cursor: pointer; border-radius: 8px; font-size: 14px; font-weight: 500; transition: all 0.2s; }
-        .tab:hover { color: #ccc; }
-        .tab.active { background: #6366f1; color: #fff; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; margin: 20px 0; }
-        .card { background: linear-gradient(145deg, #1a1a2e, #252540); border-radius: 16px; padding: 24px; border: 1px solid #2a2a40; transition: transform 0.2s, box-shadow 0.2s; }
-        .card:hover { transform: translateY(-2px); box-shadow: 0 8px 30px rgba(99, 102, 241, 0.1); }
-        .card h3 { margin-bottom: 16px; font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 1px; }
-        .stat { font-size: 36px; font-weight: 700; background: linear-gradient(135deg, #fff, #a5b4fc); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-        .stat-label { font-size: 13px; color: #666; margin-top: 4px; }
-        .chat-container { background: linear-gradient(145deg, #1a1a2e, #252540); border-radius: 16px; padding: 24px; border: 1px solid #2a2a40; }
-        .messages { height: 450px; overflow-y: auto; margin-bottom: 20px; padding: 16px; background: #0f0f1a; border-radius: 12px; }
-        .message { margin: 12px 0; padding: 12px 18px; border-radius: 12px; max-width: 75%; line-height: 1.5; }
-        .message.user { background: linear-gradient(135deg, #6366f1, #8b5cf6); margin-left: auto; }
-        .message.bot { background: #252540; border: 1px solid #2a2a40; }
-        .input-row { display: flex; gap: 12px; }
-        .input-row input { flex: 1; padding: 14px 18px; background: #0f0f1a; border: 1px solid #2a2a40; border-radius: 12px; color: #fff; font-size: 15px; transition: border-color 0.2s; }
-        .input-row input:focus { outline: none; border-color: #6366f1; }
-        .input-row button { padding: 14px 28px; background: linear-gradient(135deg, #6366f1, #8b5cf6); border: none; border-radius: 12px; color: #fff; cursor: pointer; font-weight: 600; transition: transform 0.2s, box-shadow 0.2s; }
-        .input-row button:hover { transform: translateY(-1px); box-shadow: 0 4px 20px rgba(99, 102, 241, 0.4); }
-        .typing { color: #8b5cf6; font-style: italic; padding: 12px; display: flex; align-items: center; gap: 8px; }
-        .typing::before { content: ''; width: 8px; height: 8px; background: #8b5cf6; border-radius: 50%; animation: typing 1s infinite; }
-        @keyframes typing { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
-        .channel-list { display: flex; flex-direction: column; gap: 12px; }
-        .channel { display: flex; justify-content: space-between; align-items: center; padding: 16px; background: #0f0f1a; border-radius: 12px; border: 1px solid #2a2a40; }
-        .channel-name { font-weight: 600; }
-        .channel-status { display: flex; align-items: center; gap: 8px; font-size: 13px; }
-        .channel-dot { width: 8px; height: 8px; border-radius: 50%; }
-        .channel-dot.online { background: #4ade80; }
-        .channel-dot.offline { background: #666; }
-        .tab-content { display: none; }
-        .tab-content.active { display: block; }
-        
-        /* Settings styles */
-        .settings-section { margin-bottom: 32px; }
-        .settings-section h4 { font-size: 16px; color: #a5b4fc; margin-bottom: 16px; padding-bottom: 8px; border-bottom: 1px solid #2a2a40; }
-        .form-group { margin-bottom: 20px; }
-        .form-group label { display: block; font-size: 13px; color: #888; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
-        .form-group input, .form-group select { width: 100%; padding: 12px 16px; background: #0f0f1a; border: 1px solid #2a2a40; border-radius: 10px; color: #fff; font-size: 14px; }
-        .form-group input:focus, .form-group select:focus { outline: none; border-color: #6366f1; }
-        .form-group input[type="password"] { font-family: monospace; }
-        .form-group .hint { font-size: 12px; color: #666; margin-top: 6px; }
-        .form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; }
-        .btn { padding: 12px 24px; border: none; border-radius: 10px; cursor: pointer; font-weight: 600; transition: all 0.2s; }
-        .btn-primary { background: linear-gradient(135deg, #6366f1, #8b5cf6); color: #fff; }
-        .btn-primary:hover { box-shadow: 0 4px 20px rgba(99, 102, 241, 0.4); }
-        .btn-secondary { background: #252540; color: #fff; border: 1px solid #2a2a40; }
-        .btn-secondary:hover { background: #2a2a40; }
-        .btn-success { background: linear-gradient(135deg, #22c55e, #16a34a); color: #fff; }
-        .provider-card { background: #0f0f1a; border: 1px solid #2a2a40; border-radius: 12px; padding: 20px; margin-bottom: 16px; }
-        .provider-card.configured { border-color: #22c55e; }
-        .provider-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-        .provider-name { font-weight: 600; font-size: 16px; }
-        .provider-status { font-size: 12px; padding: 4px 10px; border-radius: 20px; }
-        .provider-status.active { background: rgba(34, 197, 94, 0.2); color: #22c55e; }
-        .provider-status.inactive { background: rgba(107, 114, 128, 0.2); color: #6b7280; }
-        .toast { position: fixed; bottom: 24px; right: 24px; background: #252540; border: 1px solid #2a2a40; padding: 16px 24px; border-radius: 12px; display: none; z-index: 1000; animation: slideIn 0.3s; }
-        .toast.success { border-color: #22c55e; }
-        .toast.error { border-color: #ef4444; }
-        @keyframes slideIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
-        
-        /* Nodes styles */
-        .node-card { background: #0f0f1a; border: 1px solid #2a2a40; border-radius: 12px; padding: 16px; margin-bottom: 12px; }
-        .node-header { display: flex; justify-content: space-between; align-items: center; }
-        .node-name { font-weight: 600; }
-        .node-id { font-size: 12px; color: #666; font-family: monospace; }
-        .node-details { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 12px; font-size: 13px; color: #888; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+            background: #0f0f1a; 
+            color: #eee; 
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .container { 
+            text-align: center; 
+            max-width: 500px; 
+            padding: 40px;
+        }
+        h1 { 
+            font-size: 32px; 
+            background: linear-gradient(135deg, #6366f1, #8b5cf6); 
+            -webkit-background-clip: text; 
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 16px;
+        }
+        .icon { font-size: 64px; margin-bottom: 24px; }
+        p { color: #888; margin-bottom: 24px; line-height: 1.6; }
+        code { 
+            display: block;
+            background: #1a1a2e; 
+            padding: 16px 24px; 
+            border-radius: 12px; 
+            margin: 16px 0;
+            font-size: 14px;
+            color: #a5b4fc;
+            border: 1px solid #2a2a40;
+        }
+        .hint { 
+            font-size: 13px; 
+            color: #666; 
+            margin-top: 32px;
+            padding-top: 24px;
+            border-top: 1px solid #2a2a40;
+        }
+        a { color: #6366f1; text-decoration: none; }
+        a:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
     <div class="container">
-        <header>
-            <div class="logo">
-                <span class="logo-icon">🤖</span>
-                <h1>GigaBot</h1>
-            </div>
-            <div class="status">
-                <div class="status-dot" id="connection-status"></div>
-                <span id="connection-text">Connecting...</span>
-            </div>
-        </header>
-        
-        <div class="tabs">
-            <button class="tab active" data-tab="overview">Overview</button>
-            <button class="tab" data-tab="chat">Chat</button>
-            <button class="tab" data-tab="channels">Channels</button>
-            <button class="tab" data-tab="nodes">Nodes</button>
-            <button class="tab" data-tab="sessions">Sessions</button>
-            <button class="tab" data-tab="settings">Settings</button>
-        </div>
-        
-        <div id="overview" class="tab-content active">
-            <div class="grid">
-                <div class="card">
-                    <h3>Token Usage (Session)</h3>
-                    <div class="stat" id="tokens-today">0</div>
-                    <div class="stat-label">tokens used</div>
-                </div>
-                <div class="card">
-                    <h3>Active Model</h3>
-                    <div class="stat" id="model-stat" style="font-size: 18px;">--</div>
-                    <div class="stat-label">current routing tier</div>
-                </div>
-                <div class="card">
-                    <h3>Active Sessions</h3>
-                    <div class="stat" id="sessions-count">0</div>
-                    <div class="stat-label">conversations</div>
-                </div>
-                <div class="card">
-                    <h3>Estimated Cost</h3>
-                    <div class="stat" id="cost">$0.00</div>
-                    <div class="stat-label">USD this session</div>
-                </div>
-            </div>
-            <div class="grid" style="margin-top: 20px;">
-                <div class="card">
-                    <h3>System Status</h3>
-                    <div id="system-status">
-                        <div class="channel" style="margin-bottom: 8px;">
-                            <span>Gateway</span>
-                            <div class="channel-status"><div class="channel-dot online"></div> Running</div>
-                        </div>
-                        <div class="channel" style="margin-bottom: 8px;">
-                            <span>Tiered Routing</span>
-                            <div class="channel-status" id="routing-status">--</div>
-                        </div>
-                        <div class="channel">
-                            <span>Nodes System</span>
-                            <div class="channel-status" id="nodes-status">--</div>
-                        </div>
-                    </div>
-                </div>
-                <div class="card">
-                    <h3>Quick Stats</h3>
-                    <div id="quick-stats">
-                        <div class="channel" style="margin-bottom: 8px;">
-                            <span>Workspace</span>
-                            <span id="workspace-path" style="font-size: 12px; color: #888;">--</span>
-                        </div>
-                        <div class="channel">
-                            <span>Version</span>
-                            <span id="version-info">1.0.0</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        
-        <div id="chat" class="tab-content">
-            <div class="chat-container">
-                <div class="messages" id="messages">
-                    <div class="message bot">Hello! I'm GigaBot. How can I help you today?</div>
-                </div>
-                <div class="typing" id="typing" style="display: none;">GigaBot is thinking...</div>
-                <div class="input-row">
-                    <input type="text" id="chat-input" placeholder="Type a message..." />
-                    <button onclick="sendMessage()">Send</button>
-                </div>
-            </div>
-        </div>
-        
-        <div id="channels" class="tab-content">
-            <div class="card">
-                <h3>Channel Status</h3>
-                <div class="channel-list" id="channel-list">
-                    <div class="channel"><span>Loading...</span></div>
-                </div>
-            </div>
-        </div>
-        
-        <div id="nodes" class="tab-content">
-            <div class="card">
-                <h3>Connected Nodes</h3>
-                <div id="nodes-list">
-                    <div class="node-card">
-                        <p style="color: #888;">No nodes connected. Run <code style="background:#0f0f1a;padding:2px 8px;border-radius:4px;">gigabot node run --host &lt;gateway-ip&gt;</code> on a remote machine to connect.</p>
-                    </div>
-                </div>
-            </div>
-        </div>
-        
-        <div id="sessions" class="tab-content">
-            <div class="card">
-                <h3>Active Sessions</h3>
-                <div id="session-list">Loading...</div>
-            </div>
-        </div>
-        
-        <div id="settings" class="tab-content">
-            <div class="grid">
-                <div class="card" style="grid-column: span 2;">
-                    <h3>Model Providers</h3>
-                    <p style="color: #888; margin-bottom: 20px; font-size: 14px;">Configure your LLM provider API keys. At least one provider is required.</p>
-                    
-                    <div class="provider-card" id="provider-openrouter">
-                        <div class="provider-header">
-                            <span class="provider-name">🌐 OpenRouter</span>
-                            <span class="provider-status inactive" id="openrouter-status">Not Configured</span>
-                        </div>
-                        <div class="form-group">
-                            <label>API Key</label>
-                            <input type="password" id="openrouter-key" placeholder="sk-or-..." />
-                            <div class="hint">Get your key at <a href="https://openrouter.ai/keys" target="_blank" style="color: #6366f1;">openrouter.ai/keys</a></div>
-                        </div>
-                    </div>
-                    
-                    <div class="provider-card" id="provider-anthropic">
-                        <div class="provider-header">
-                            <span class="provider-name">🧠 Anthropic (Claude)</span>
-                            <span class="provider-status inactive" id="anthropic-status">Not Configured</span>
-                        </div>
-                        <div class="form-group">
-                            <label>API Key</label>
-                            <input type="password" id="anthropic-key" placeholder="sk-ant-..." />
-                            <div class="hint">Get your key at <a href="https://console.anthropic.com/" target="_blank" style="color: #6366f1;">console.anthropic.com</a></div>
-                        </div>
-                    </div>
-                    
-                    <div class="provider-card" id="provider-openai">
-                        <div class="provider-header">
-                            <span class="provider-name">⚡ OpenAI (GPT)</span>
-                            <span class="provider-status inactive" id="openai-status">Not Configured</span>
-                        </div>
-                        <div class="form-group">
-                            <label>API Key</label>
-                            <input type="password" id="openai-key" placeholder="sk-..." />
-                            <div class="hint">Get your key at <a href="https://platform.openai.com/api-keys" target="_blank" style="color: #6366f1;">platform.openai.com</a></div>
-                        </div>
-                    </div>
-                    
-                    <div style="margin-top: 20px;">
-                        <button class="btn btn-primary" onclick="saveProviderSettings()">Save Provider Settings</button>
-                        <button class="btn btn-secondary" onclick="testProviders()" style="margin-left: 12px;">Test Connection</button>
-                    </div>
-                </div>
-                
-                <div class="card">
-                    <h3>Model Routing</h3>
-                    <div class="settings-section">
-                        <div class="form-group">
-                            <label>Default Model</label>
-                            <select id="default-model">
-                                <option value="anthropic/claude-sonnet-4-5">Claude Sonnet 4.5</option>
-                                <option value="anthropic/claude-opus-4-5">Claude Opus 4.5</option>
-                                <option value="openai/gpt-4o">GPT-4o</option>
-                                <option value="openai/gpt-4o-mini">GPT-4o Mini</option>
-                                <option value="google/gemini-2.0-flash">Gemini 2.0 Flash</option>
-                                <option value="moonshot/kimi-k2.5">Kimi K2.5</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>Tiered Routing</label>
-                            <select id="tiered-routing">
-                                <option value="true">Enabled</option>
-                                <option value="false">Disabled</option>
-                            </select>
-                            <div class="hint">Automatically route to optimal models based on task complexity</div>
-                        </div>
-                    </div>
-                    <button class="btn btn-primary" onclick="saveRoutingSettings()">Save Routing</button>
-                </div>
-                
-                <div class="card">
-                    <h3>Security</h3>
-                    <div class="settings-section">
-                        <div class="form-group">
-                            <label>Authentication Mode</label>
-                            <select id="auth-mode">
-                                <option value="none">None (Local Only)</option>
-                                <option value="token">Token</option>
-                                <option value="password">Password</option>
-                            </select>
-                        </div>
-                        <div class="form-group" id="token-group" style="display: none;">
-                            <label>Auth Token</label>
-                            <input type="password" id="auth-token" placeholder="Enter token..." />
-                        </div>
-                        <div class="form-group">
-                            <label>Sandbox Mode</label>
-                            <select id="sandbox-mode">
-                                <option value="off">Off</option>
-                                <option value="non-main">Non-main Only</option>
-                                <option value="all">All Commands</option>
-                            </select>
-                        </div>
-                    </div>
-                    <button class="btn btn-primary" onclick="saveSecuritySettings()">Save Security</button>
-                </div>
-            </div>
+        <div class="icon">🤖</div>
+        <h1>GigaBot Dashboard</h1>
+        <p>The React dashboard has not been built yet. To build it, run:</p>
+        <code>cd nanobot/ui/dashboard && npm install && npm run build</code>
+        <p>Or use the new FastAPI server with hot-reload:</p>
+        <code>gigabot gateway-v2 --reload</code>
+        <div class="hint">
+            For development, you can run the frontend separately:<br>
+            <code>cd nanobot/ui/dashboard && npm run dev</code>
+            <br><br>
+            <a href="/api/system/status">View API Status</a> | 
+            <a href="/health">Health Check</a>
         </div>
     </div>
-    
-    <div class="toast" id="toast"></div>
-    
-    <script>
-        // Tab switching
-        document.querySelectorAll('.tab').forEach(tab => {
-            tab.addEventListener('click', () => {
-                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-                tab.classList.add('active');
-                document.getElementById(tab.dataset.tab).classList.add('active');
-                
-                // Load tab-specific data
-                if (tab.dataset.tab === 'nodes') loadNodes();
-                if (tab.dataset.tab === 'sessions') loadSessions();
-                if (tab.dataset.tab === 'settings') loadSettings();
-            });
-        });
-        
-        // Toast notifications
-        function showToast(message, type = 'success') {
-            const toast = document.getElementById('toast');
-            toast.textContent = message;
-            toast.className = 'toast ' + type;
-            toast.style.display = 'block';
-            setTimeout(() => { toast.style.display = 'none'; }, 3000);
-        }
-        
-        // Auth mode toggle
-        document.getElementById('auth-mode').addEventListener('change', (e) => {
-            document.getElementById('token-group').style.display = 
-                e.target.value === 'token' ? 'block' : 'none';
-        });
-        
-        // WebSocket connection
-        let ws;
-        let reconnectAttempts = 0;
-        
-        function connectWS() {
-            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-            ws = new WebSocket(`${protocol}//${location.host}/ws`);
-            
-            ws.onopen = () => {
-                reconnectAttempts = 0;
-                document.getElementById('connection-status').classList.remove('offline');
-                document.getElementById('connection-text').textContent = 'Connected';
-            };
-            
-            ws.onmessage = (e) => {
-                const data = JSON.parse(e.data);
-                if (data.type === 'response') {
-                    addMessage(data.content, 'bot');
-                } else if (data.type === 'typing') {
-                    document.getElementById('typing').style.display = data.status ? 'flex' : 'none';
-                } else if (data.type === 'status') {
-                    updateStatus(data.data);
-                } else if (data.type === 'error') {
-                    addMessage('Error: ' + data.error, 'bot');
-                }
-            };
-            
-            ws.onclose = () => {
-                document.getElementById('connection-status').classList.add('offline');
-                document.getElementById('connection-text').textContent = 'Disconnected';
-                reconnectAttempts++;
-                const delay = Math.min(30000, 1000 * Math.pow(2, reconnectAttempts));
-                setTimeout(connectWS, delay);
-            };
-            
-            ws.onerror = () => ws.close();
-        }
-        connectWS();
-        
-        // Chat functions
-        function addMessage(text, type) {
-            const div = document.createElement('div');
-            div.className = 'message ' + type;
-            div.textContent = text;
-            document.getElementById('messages').appendChild(div);
-            div.scrollIntoView({ behavior: 'smooth' });
-        }
-        
-        function sendMessage() {
-            const input = document.getElementById('chat-input');
-            const message = input.value.trim();
-            if (!message || !ws || ws.readyState !== WebSocket.OPEN) return;
-            
-            addMessage(message, 'user');
-            ws.send(JSON.stringify({ action: 'chat', message }));
-            input.value = '';
-        }
-        
-        document.getElementById('chat-input').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') sendMessage();
-        });
-        
-        // Update status
-        function updateStatus(data) {
-            if (data.tracking) {
-                document.getElementById('tokens-today').textContent = 
-                    (data.tracking.session?.total_tokens || data.tracking.total_tokens || 0).toLocaleString();
-                document.getElementById('cost').textContent = 
-                    '$' + (data.tracking.session?.estimated_cost || data.tracking.estimated_cost || 0).toFixed(4);
-            }
-            
-            if (data.model) {
-                document.getElementById('model-stat').textContent = data.model;
-            }
-            
-            if (data.workspace) {
-                document.getElementById('workspace-path').textContent = data.workspace;
-            }
-            
-            if (data.channels) {
-                const list = document.getElementById('channel-list');
-                list.innerHTML = '';
-                let hasChannels = false;
-                for (const [name, status] of Object.entries(data.channels)) {
-                    hasChannels = true;
-                    const div = document.createElement('div');
-                    div.className = 'channel';
-                    div.innerHTML = '<span class="channel-name">' + name + '</span>' +
-                        '<div class="channel-status"><div class="channel-dot ' + 
-                        (status.running ? 'online' : 'offline') + '"></div>' +
-                        (status.running ? 'Online' : 'Offline') + '</div>';
-                    list.appendChild(div);
-                }
-                if (!hasChannels) {
-                    list.innerHTML = '<div class="channel"><span style="color:#888">No channels configured</span></div>';
-                }
-            }
-        }
-        
-        // Load data functions
-        async function loadStatus() {
-            try {
-                const res = await fetch('/api/status');
-                const data = await res.json();
-                updateStatus(data);
-                
-                // Update routing status
-                const routingEl = document.getElementById('routing-status');
-                routingEl.innerHTML = '<div class="channel-dot online"></div> Enabled';
-                
-            } catch (e) {
-                console.error('Failed to load status:', e);
-            }
-        }
-        
-        async function loadSessions() {
-            try {
-                const res = await fetch('/api/sessions');
-                const data = await res.json();
-                const list = document.getElementById('session-list');
-                if (data.sessions && data.sessions.length > 0) {
-                    list.innerHTML = data.sessions.map(s => 
-                        '<div class="channel"><span>' + s.key + '</span><span>' + s.message_count + ' messages</span></div>'
-                    ).join('');
-                    document.getElementById('sessions-count').textContent = data.sessions.length;
-                } else {
-                    list.innerHTML = '<div style="color:#888">No active sessions</div>';
-                    document.getElementById('sessions-count').textContent = '0';
-                }
-            } catch (e) {
-                console.error('Failed to load sessions:', e);
-            }
-        }
-        
-        async function loadNodes() {
-            try {
-                const res = await fetch('/api/nodes');
-                const data = await res.json();
-                const list = document.getElementById('nodes-list');
-                const statusEl = document.getElementById('nodes-status');
-                
-                if (data.enabled) {
-                    statusEl.innerHTML = '<div class="channel-dot online"></div> Enabled';
-                    
-                    if (data.nodes && data.nodes.length > 0) {
-                        list.innerHTML = data.nodes.map(n => 
-                            '<div class="node-card">' +
-                            '<div class="node-header"><span class="node-name">' + n.display_name + '</span>' +
-                            '<span class="node-id">' + n.id.substring(0, 8) + '...</span></div>' +
-                            '<div class="node-details"><span>Platform: ' + (n.platform || '--') + '</span>' +
-                            '<span>IP: ' + (n.ip_address || '--') + '</span>' +
-                            '<span>Status: ' + n.status + '</span></div></div>'
-                        ).join('');
-                    } else {
-                        list.innerHTML = '<div class="node-card"><p style="color:#888">No nodes connected yet.</p></div>';
-                    }
-                } else {
-                    statusEl.innerHTML = '<div class="channel-dot offline"></div> Disabled';
-                    list.innerHTML = '<div class="node-card"><p style="color:#888">Nodes system not enabled.</p></div>';
-                }
-            } catch (e) {
-                console.error('Failed to load nodes:', e);
-            }
-        }
-        
-        async function loadSettings() {
-            try {
-                const res = await fetch('/api/config');
-                const data = await res.json();
-                
-                if (data.agents) {
-                    document.getElementById('default-model').value = data.agents.model || '';
-                    document.getElementById('tiered-routing').value = data.agents.tiered_routing ? 'true' : 'false';
-                }
-                
-                if (data.security) {
-                    document.getElementById('auth-mode').value = data.security.auth_mode || 'none';
-                    document.getElementById('sandbox-mode').value = data.security.sandbox_mode || 'off';
-                }
-            } catch (e) {
-                console.error('Failed to load settings:', e);
-            }
-        }
-        
-        // Settings save functions
-        function saveProviderSettings() {
-            showToast('Provider settings saved! Restart gateway to apply.', 'success');
-        }
-        
-        function saveRoutingSettings() {
-            showToast('Routing settings saved!', 'success');
-        }
-        
-        function saveSecuritySettings() {
-            showToast('Security settings saved!', 'success');
-        }
-        
-        function testProviders() {
-            showToast('Testing provider connections...', 'success');
-            setTimeout(() => {
-                showToast('Connection test complete!', 'success');
-            }, 2000);
-        }
-        
-        // Initial load
-        loadStatus();
-        loadSessions();
-        setInterval(loadStatus, 30000);
-    </script>
 </body>
 </html>"""
 
@@ -1450,6 +1252,7 @@ async def start_server(
     sessions: Any = None,
     channels: Any = None,
     node_manager: "NodeManager | None" = None,
+    cron_service: "CronService | None" = None,
 ) -> UIServer:
     """
     Start the WebUI server.
@@ -1464,6 +1267,7 @@ async def start_server(
         sessions: SessionManager instance.
         channels: ChannelManager instance.
         node_manager: NodeManager instance for node connections.
+        cron_service: CronService instance for scheduled jobs.
     
     Returns:
         Running UIServer instance.
@@ -1477,6 +1281,7 @@ async def start_server(
         sessions=sessions,
         channels=channels,
         node_manager=node_manager,
+        cron_service=cron_service,
     )
     
     if chat_handler:

@@ -278,6 +278,132 @@ class ToolReinforcementConfig(BaseModel):
     advisor_storage_path: str = "~/.gigabot/tool_advisor.json"
 
 
+class IntentTrackingConfig(BaseModel):
+    """
+    Intent tracking configuration for proactive AI.
+    
+    Captures and analyzes user intentions to enable:
+    - Pattern recognition across conversations
+    - Proactive suggestions
+    - Intent-based memory relevance
+    """
+    enabled: bool = True
+    
+    # Analysis model (use a cheap model for extraction)
+    analysis_model: str = "moonshot/kimi-k2.5"
+    
+    # Pattern tracking
+    track_patterns: bool = True
+    pattern_analysis_interval_hours: int = 24  # How often to analyze patterns
+    
+    # History settings
+    max_history_days: int = 90  # How long to keep intent history
+    
+    # Categories to track
+    categories: list[str] = Field(default_factory=lambda: [
+        "work", "personal", "learning", "creative", "technical", "communication"
+    ])
+
+
+class MemoryEvolutionConfig(BaseModel):
+    """
+    Memory evolution configuration for self-organizing memory.
+    
+    Features:
+    - Auto-promotion: Frequently accessed memories gain importance
+    - Auto-decay: Unused memories lose importance
+    - Auto-archive: Move old/unused memories to archive
+    - Cross-referencing: Link related memories
+    - Consolidation: Merge similar memories
+    """
+    enabled: bool = True
+    
+    # Evolution schedule
+    evolution_interval_hours: int = 24  # Run evolution cycle daily
+    
+    # Promotion settings
+    auto_promote: bool = True
+    promotion_access_threshold: int = 3  # Accesses needed for promotion
+    promotion_window_days: int = 7  # Window for counting accesses
+    
+    # Decay settings
+    auto_expire: bool = True
+    decay_inactive_days: int = 30  # Days of inactivity before decay
+    
+    # Archive settings
+    auto_archive: bool = True
+    archive_after_days: int = 90  # Days of inactivity before archival
+    min_importance_threshold: float = 0.1  # Below this, archive faster
+    
+    # Consolidation settings
+    auto_consolidate: bool = True
+    consolidation_threshold: float = 0.85  # Vector similarity for merge
+
+
+class CostOptimizationConfig(BaseModel):
+    """
+    Cost optimization configuration.
+    
+    Features:
+    - Response caching: Cache identical/similar queries
+    - Budget management: Daily/weekly limits with alerts
+    - Model downgrade suggestions: Use cheaper models when appropriate
+    - Context pruning: Reduce context sizes
+    """
+    enabled: bool = True
+    
+    # Response caching
+    response_caching: bool = True
+    cache_max_size: int = 1000
+    cache_ttl_seconds: int = 3600  # 1 hour default TTL
+    cache_similarity_threshold: float = 0.95  # For semantic matching (future)
+    
+    # Budget settings (USD, 0 = unlimited)
+    daily_budget_usd: float = 0.0
+    weekly_budget_usd: float = 0.0
+    alert_threshold: float = 0.8  # Alert at 80%
+    auto_downgrade_on_budget: bool = False  # Switch to cheaper models at limit
+    
+    # Optimization features
+    context_pruning: bool = True
+    suggest_model_downgrades: bool = True
+    
+    # Storage
+    cache_storage_path: str = "~/.gigabot/cache.json"
+
+
+class ProactiveConfig(BaseModel):
+    """
+    Proactive engine configuration.
+    
+    Features:
+    - Reminders: Time-based prompts
+    - Suggestions: Pattern-based recommendations
+    - Automation: Pre-approved recurring tasks
+    - Insights: Discovered patterns from memory/usage
+    - Anticipation: Predicted needs from intent tracking
+    """
+    enabled: bool = True
+    
+    # Action limits
+    max_daily_actions: int = 10  # Max proactive actions per day per user
+    require_confirmation: bool = True  # Require user confirmation by default
+    
+    # Action type toggles
+    enable_reminders: bool = True
+    enable_suggestions: bool = True
+    enable_automation: bool = False  # Disabled by default for safety
+    enable_insights: bool = True
+    enable_anticipation: bool = True
+    
+    # Automation safety
+    automation_allowlist: list[str] = Field(default_factory=list)
+    
+    # Learning settings
+    learn_from_feedback: bool = True
+    min_acceptance_rate: float = 0.3  # Stop suggesting if below this
+
+
 class AgentsConfig(BaseModel):
     """Agent configuration."""
     defaults: AgentDefaults = Field(default_factory=AgentDefaults)
@@ -289,6 +415,10 @@ class AgentsConfig(BaseModel):
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     self_heal: SelfHealConfig = Field(default_factory=SelfHealConfig)
     tool_reinforcement: ToolReinforcementConfig = Field(default_factory=ToolReinforcementConfig)
+    intent_tracking: IntentTrackingConfig = Field(default_factory=IntentTrackingConfig)
+    memory_evolution: MemoryEvolutionConfig = Field(default_factory=MemoryEvolutionConfig)
+    cost_optimization: CostOptimizationConfig = Field(default_factory=CostOptimizationConfig)
+    proactive: ProactiveConfig = Field(default_factory=ProactiveConfig)
 
 
 class ProviderConfig(BaseModel):

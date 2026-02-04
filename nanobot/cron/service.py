@@ -12,6 +12,35 @@ from loguru import logger
 from nanobot.cron.types import CronJob, CronJobState, CronPayload, CronSchedule, CronStore
 
 
+# Built-in system jobs
+BUILTIN_JOBS = {
+    "memory_evolution": {
+        "name": "Memory Evolution",
+        "schedule": {"kind": "cron", "expr": "0 3 * * *"},  # Daily at 3 AM
+        "payload": {"kind": "system", "message": "memory_evolve"},
+        "enabled": True,
+    },
+    "intent_patterns": {
+        "name": "Intent Pattern Analysis",
+        "schedule": {"kind": "cron", "expr": "0 4 * * *"},  # Daily at 4 AM
+        "payload": {"kind": "system", "message": "intent_analyze"},
+        "enabled": True,
+    },
+    "proactive_check": {
+        "name": "Proactive Trigger Check",
+        "schedule": {"kind": "every", "every_ms": 300000},  # Every 5 minutes
+        "payload": {"kind": "system", "message": "proactive_check"},
+        "enabled": True,
+    },
+    "cost_report": {
+        "name": "Daily Cost Report",
+        "schedule": {"kind": "cron", "expr": "0 23 * * *"},  # 11 PM daily
+        "payload": {"kind": "system", "message": "cost_daily_report"},
+        "enabled": True,
+    },
+}
+
+
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -45,10 +74,12 @@ class CronService:
     def __init__(
         self,
         store_path: Path,
-        on_job: Callable[[CronJob], Coroutine[Any, Any, str | None]] | None = None
+        on_job: Callable[[CronJob], Coroutine[Any, Any, str | None]] | None = None,
+        system_handlers: dict[str, Callable[[], Coroutine[Any, Any, None]]] | None = None,
     ):
         self.store_path = store_path
         self.on_job = on_job  # Callback to execute job, returns response text
+        self.system_handlers = system_handlers or {}  # Handlers for system jobs
         self._store: CronStore | None = None
         self._timer_task: asyncio.Task | None = None
         self._running = False
@@ -148,10 +179,43 @@ class CronService:
         """Start the cron service."""
         self._running = True
         self._load_store()
+        self._ensure_builtin_jobs()
         self._recompute_next_runs()
         self._save_store()
         self._arm_timer()
         logger.info(f"Cron service started with {len(self._store.jobs if self._store else [])} jobs")
+    
+    def _ensure_builtin_jobs(self) -> None:
+        """Ensure built-in system jobs exist."""
+        if not self._store:
+            return
+        
+        existing_ids = {j.id for j in self._store.jobs}
+        now = _now_ms()
+        
+        for job_id, job_def in BUILTIN_JOBS.items():
+            builtin_id = f"builtin_{job_id}"
+            if builtin_id not in existing_ids:
+                schedule = CronSchedule(
+                    kind=job_def["schedule"]["kind"],
+                    expr=job_def["schedule"].get("expr"),
+                    every_ms=job_def["schedule"].get("everyMs"),
+                )
+                job = CronJob(
+                    id=builtin_id,
+                    name=job_def["name"],
+                    enabled=job_def.get("enabled", True),
+                    schedule=schedule,
+                    payload=CronPayload(
+                        kind=job_def["payload"].get("kind", "system"),
+                        message=job_def["payload"].get("message", ""),
+                    ),
+                    state=CronJobState(next_run_at_ms=_compute_next_run(schedule, now)),
+                    created_at_ms=now,
+                    updated_at_ms=now,
+                )
+                self._store.jobs.append(job)
+                logger.info(f"Cron: added built-in job '{job.name}' ({job.id})")
     
     def stop(self) -> None:
         """Stop the cron service."""
@@ -220,7 +284,18 @@ class CronService:
         
         try:
             response = None
-            if self.on_job:
+            
+            # Handle system jobs with dedicated handlers
+            if job.payload.kind == "system" and job.payload.message:
+                handler = self.system_handlers.get(job.payload.message)
+                if handler:
+                    await handler()
+                    logger.info(f"Cron: system job '{job.payload.message}' executed")
+                else:
+                    logger.warning(f"Cron: no handler for system job '{job.payload.message}'")
+            
+            # Handle agent turn jobs
+            elif self.on_job:
                 response = await self.on_job(job)
             
             job.state.last_status = "ok"
@@ -344,3 +419,18 @@ class CronService:
             "jobs": len(store.jobs),
             "next_wake_at_ms": self._get_next_wake_ms(),
         }
+    
+    def register_system_handler(
+        self,
+        name: str,
+        handler: Callable[[], Coroutine[Any, Any, None]]
+    ) -> None:
+        """
+        Register a handler for a system job.
+        
+        Args:
+            name: The system job message name (e.g., "memory_evolve")
+            handler: Async function to execute
+        """
+        self.system_handlers[name] = handler
+        logger.debug(f"Cron: registered system handler for '{name}'")

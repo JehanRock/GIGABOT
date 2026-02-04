@@ -1,4 +1,117 @@
 {
   "version": 1,
-  "jobs": []
+  "jobs": [
+    {
+      "id": "builtin_memory_evolution",
+      "name": "Memory Evolution",
+      "enabled": true,
+      "schedule": {
+        "kind": "cron",
+        "atMs": null,
+        "everyMs": null,
+        "expr": "0 3 * * *",
+        "tz": null
+      },
+      "payload": {
+        "kind": "system",
+        "message": "memory_evolve",
+        "deliver": false,
+        "channel": null,
+        "to": null
+      },
+      "state": {
+        "nextRunAtMs": 1770260400000,
+        "lastRunAtMs": null,
+        "lastStatus": null,
+        "lastError": null
+      },
+      "createdAtMs": 1770106636640,
+      "updatedAtMs": 1770106636640,
+      "deleteAfterRun": false
+    },
+    {
+      "id": "builtin_intent_patterns",
+      "name": "Intent Pattern Analysis",
+      "enabled": true,
+      "schedule": {
+        "kind": "cron",
+        "atMs": null,
+        "everyMs": null,
+        "expr": "0 4 * * *",
+        "tz": null
+      },
+      "payload": {
+        "kind": "system",
+        "message": "intent_analyze",
+        "deliver": false,
+        "channel": null,
+        "to": null
+      },
+      "state": {
+        "nextRunAtMs": 1770264000000,
+        "lastRunAtMs": 1770177600002,
+        "lastStatus": "ok",
+        "lastError": null
+      },
+      "createdAtMs": 1770106636640,
+      "updatedAtMs": 1770177600002,
+      "deleteAfterRun": false
+    },
+    {
+      "id": "builtin_proactive_check",
+      "name": "Proactive Trigger Check",
+      "enabled": true,
+      "schedule": {
+        "kind": "every",
+        "atMs": null,
+        "everyMs": null,
+        "expr": null,
+        "tz": null
+      },
+      "payload": {
+        "kind": "system",
+        "message": "proactive_check",
+        "deliver": false,
+        "channel": null,
+        "to": null
+      },
+      "state": {
+        "nextRunAtMs": null,
+        "lastRunAtMs": null,
+        "lastStatus": null,
+        "lastError": null
+      },
+      "createdAtMs": 1770106636640,
+      "updatedAtMs": 1770106636640,
+      "deleteAfterRun": false
+    },
+    {
+      "id": "builtin_cost_report",
+      "name": "Daily Cost Report",
+      "enabled": true,
+      "schedule": {
+        "kind": "cron",
+        "atMs": null,
+        "everyMs": null,
+        "expr": "0 23 * * *",
+        "tz": null
+      },
+      "payload": {
+        "kind": "system",
+        "message": "cost_daily_report",
+        "deliver": false,
+        "channel": null,
+        "to": null
+      },
+      "state": {
+        "nextRunAtMs": 1770246000000,
+        "lastRunAtMs": null,
+        "lastStatus": null,
+        "lastError": null
+      },
+      "createdAtMs": 1770106636640,
+      "updatedAtMs": 1770106636640,
+      "deleteAfterRun": false
+    }
+  ]
 }

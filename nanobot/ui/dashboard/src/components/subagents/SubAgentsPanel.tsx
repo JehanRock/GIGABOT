@@ -11,7 +11,7 @@ const mockSubAgents = [
     status: 'running' as const,
     progress: 65,
     startedAt: new Date(Date.now() - 1000 * 60 * 5).toISOString(),
-    model: 'gpt-4',
+    model: 'moonshot/kimi-k2.5',
   },
   {
     id: 'sa-2',
@@ -20,7 +20,7 @@ const mockSubAgents = [
     status: 'running' as const,
     progress: 30,
     startedAt: new Date(Date.now() - 1000 * 60 * 2).toISOString(),
-    model: 'claude-3-opus',
+    model: 'anthropic/claude-opus-4.5',
   },
   {
     id: 'sa-3',
@@ -31,7 +31,7 @@ const mockSubAgents = [
     startedAt: new Date(Date.now() - 1000 * 60 * 30).toISOString(),
     completedAt: new Date(Date.now() - 1000 * 60 * 15).toISOString(),
     result: 'Generated documentation for 12 modules',
-    model: 'gpt-4-turbo',
+    model: 'google/gemini-3-flash',
   },
   {
     id: 'sa-4',
@@ -42,7 +42,7 @@ const mockSubAgents = [
     startedAt: new Date(Date.now() - 1000 * 60 * 60).toISOString(),
     completedAt: new Date(Date.now() - 1000 * 60 * 50).toISOString(),
     error: 'API rate limit exceeded',
-    model: 'gpt-3.5-turbo',
+    model: 'deepseek/deepseek-v3.2',
   },
 ]
 
@@ -178,7 +178,7 @@ function SpawnAgentModal({
   onSpawn: (task: string, model: string) => void
 }) {
   const [task, setTask] = useState('')
-  const [model, setModel] = useState('gpt-4')
+  const [model, setModel] = useState('moonshot/kimi-k2.5')
 
   if (!isOpen) return null
 
@@ -211,10 +211,19 @@ function SpawnAgentModal({
               onChange={(e) => setModel(e.target.value)}
               className="w-full px-3 py-2 bg-giga-dark border border-giga-border rounded-lg text-white focus:border-giga-accent focus:outline-none"
             >
-              <option value="gpt-4">GPT-4</option>
-              <option value="gpt-4-turbo">GPT-4 Turbo</option>
-              <option value="claude-3-opus">Claude 3 Opus</option>
-              <option value="claude-3-sonnet">Claude 3 Sonnet</option>
+              <optgroup label="Tier 1 - Flagship Models">
+                <option value="moonshot/kimi-k2.5">KIMI K2.5 (Default)</option>
+                <option value="anthropic/claude-opus-4.5">Claude Opus 4.5</option>
+                <option value="anthropic/claude-sonnet-4.5">Claude Sonnet 4.5</option>
+                <option value="google/gemini-3-pro">Gemini 3 Pro</option>
+                <option value="openai/gpt-5.2">GPT 5.2</option>
+              </optgroup>
+              <optgroup label="Tier 2 - Fast & Efficient">
+                <option value="google/gemini-3-flash">Gemini 3 Flash</option>
+                <option value="stepfun/step-3.5-flash">Step 3.5 Flash</option>
+                <option value="deepseek/deepseek-v3.2">Deepseek V3.2</option>
+                <option value="zhipu/glm-4.7">GLM 4.7</option>
+              </optgroup>
             </select>
           </div>
         </div>

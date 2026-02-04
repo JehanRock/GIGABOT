@@ -61,6 +61,23 @@ def save_config(config: Config, config_path: Path | None = None) -> None:
         json.dump(data, f, indent=2)
 
 
+async def persist_config(config: Config, config_path: Path | None = None) -> None:
+    """
+    Async version of save_config.
+    
+    Saves configuration to file asynchronously.
+    
+    Args:
+        config: Configuration to save.
+        config_path: Optional path to save to. Uses default if not provided.
+    """
+    import asyncio
+    
+    # Run save_config in a thread pool to avoid blocking
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, save_config, config, config_path)
+
+
 def convert_keys(data: Any) -> Any:
     """Convert camelCase keys to snake_case for Pydantic."""
     if isinstance(data, dict):

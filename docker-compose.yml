@@ -16,8 +16,11 @@ services:
       - ./config:/root/.nanobot
       # Workspace - agent's working directory  
       - ./workspace:/root/.nanobot/workspace
+      # Mount source code for development/debugging - REMOVED to allow built frontend to serve
+      # - ./nanobot:/app/nanobot
     
     environment:
+      - PYTHONPATH=/app
       # LLM Provider API Keys (at least one required)
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}

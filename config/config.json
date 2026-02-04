@@ -1,18 +1,7 @@
 {
-  "providers": {
-    "openrouter": {
-      "apiKey": "",
-      "apiBase": "https://openrouter.ai/api/v1"
-    },
-    "anthropic": {
-      "apiKey": ""
-    },
-    "openai": {
-      "apiKey": ""
-    }
-  },
   "agents": {
     "defaults": {
+      "workspace": "~/.nanobot/workspace",
       "model": "anthropic/claude-sonnet-4-5",
       "maxTokens": 8192,
       "temperature": 0.7,
@@ -20,92 +9,465 @@
     },
     "tieredRouting": {
       "enabled": true,
-      "fallbackTier": "daily_driver",
       "tiers": {
-        "daily_driver": {
-          "models": ["openai/gpt-4o-mini", "anthropic/claude-sonnet-4-5"],
-          "triggers": ["chat", "simple", "quick"]
+        "dailyDriver": {
+          "models": [
+            "google/gemini-3-flash-preview",
+            "anthropic/claude-sonnet-4-5"
+          ],
+          "triggers": [
+            "chat",
+            "simple",
+            "quick"
+          ]
         },
         "coder": {
-          "models": ["anthropic/claude-sonnet-4-5", "openai/gpt-4o"],
-          "triggers": ["code", "debug", "implement", "fix"]
+          "models": [
+            "anthropic/claude-sonnet-4-5",
+            "openai/gpt-4o"
+          ],
+          "triggers": [
+            "code",
+            "debug",
+            "implement",
+            "fix"
+          ]
         },
         "specialist": {
-          "models": ["anthropic/claude-opus-4-5", "openai/gpt-4o"],
-          "triggers": ["analyze", "research", "complex", "architect"]
+          "models": [
+            "anthropic/claude-opus-4-5",
+            "openai/gpt-4o"
+          ],
+          "triggers": [
+            "analyze",
+            "research",
+            "complex",
+            "architect"
+          ]
         }
-      }
+      },
+      "classifierModel": "",
+      "fallbackTier": "daily_driver"
     },
     "swarm": {
       "enabled": true,
       "maxWorkers": 5,
       "workerModel": "anthropic/claude-sonnet-4-5",
-      "orchestratorModel": "anthropic/claude-sonnet-4-5"
+      "orchestratorModel": "anthropic/claude-sonnet-4-5",
+      "autoTrigger": true,
+      "complexityThreshold": 3,
+      "patterns": {
+        "research": [
+          "search",
+          "summarize",
+          "report"
+        ],
+        "code": [
+          "implement",
+          "test",
+          "refactor"
+        ],
+        "review": [
+          "analyze",
+          "critique",
+          "suggest"
+        ],
+        "brainstorm": [
+          "generate",
+          "evaluate",
+          "develop"
+        ]
+      }
     },
     "team": {
       "enabled": true,
+      "roles": {
+        "architect": {
+          "enabled": true,
+          "model": "anthropic/claude-opus-4-5",
+          "temperature": 0.7,
+          "maxTokens": 4096,
+          "customPersona": ""
+        },
+        "leadDev": {
+          "enabled": true,
+          "model": "anthropic/claude-sonnet-4-5",
+          "temperature": 0.7,
+          "maxTokens": 4096,
+          "customPersona": ""
+        },
+        "seniorDev": {
+          "enabled": true,
+          "model": "moonshot/kimi-k2.5",
+          "temperature": 0.7,
+          "maxTokens": 4096,
+          "customPersona": ""
+        },
+        "juniorDev": {
+          "enabled": true,
+          "model": "google/gemini-3-flash-preview",
+          "temperature": 0.7,
+          "maxTokens": 4096,
+          "customPersona": ""
+        },
+        "qaEngineer": {
+          "enabled": true,
+          "model": "anthropic/claude-sonnet-4-5",
+          "temperature": 0.7,
+          "maxTokens": 4096,
+          "customPersona": ""
+        },
+        "auditor": {
+          "enabled": true,
+          "model": "anthropic/claude-opus-4-5",
+          "temperature": 0.7,
+          "maxTokens": 4096,
+          "customPersona": ""
+        },
+        "researcher": {
+          "enabled": true,
+          "model": "google/gemini-3-flash-preview",
+          "temperature": 0.7,
+          "maxTokens": 4096,
+          "customPersona": ""
+        }
+      },
       "qaGateEnabled": true,
       "auditGateEnabled": true,
-      "auditThreshold": "sensitive"
+      "auditThreshold": "sensitive",
+      "deliberationTimeout": 120,
+      "minOpinions": 3
+    },
+    "profiler": {
+      "enabled": true,
+      "interviewerModel": "anthropic/claude-opus-4-5",
+      "autoInterview": true,
+      "profileMaxAgeDays": 30,
+      "quickAssessOnFailure": true,
+      "storagePath": "~/.gigabot/profiles",
+      "testTimeout": 30,
+      "quickTestCategories": [
+        "tool_calling",
+        "instruction",
+        "reasoning"
+      ],
+      "validateRoleAssignments": true,
+      "applyGuardrails": true
+    },
+    "devWorkflow": {
+      "enabled": false,
+      "defaultPort": 3000,
+      "devCommand": "npm run dev",
+      "readyPattern": "ready|listening|started|compiled|Local:",
+      "serverTimeout": 30,
+      "visualValidation": {
+        "enabled": false,
+        "visionModel": "anthropic/claude-sonnet-4-5",
+        "autoScreenshot": true,
+        "maxFixIterations": 5,
+        "screenshotDelayMs": 2000
+      }
     },
     "memory": {
       "enabled": true,
       "vectorSearch": true,
-      "contextMemories": 5
+      "contextMemories": 5,
+      "autoExtractFacts": true,
+      "saveCompactionSummaries": true,
+      "storagePath": "~/.gigabot/memory",
+      "vectorDimension": 384,
+      "vectorWeight": 0.6,
+      "keywordWeight": 0.3,
+      "recencyWeight": 0.1,
+      "recencyDays": 30
     },
     "selfHeal": {
+      "enabled": true,
       "toolRetryEnabled": true,
       "maxToolRetries": 3,
+      "retryBaseDelay": 1.0,
+      "retryMaxDelay": 30.0,
+      "retryExponentialBase": 2.0,
       "circuitBreakerEnabled": true,
       "circuitBreakerThreshold": 5,
-      "circuitBreakerCooldown": 60
+      "circuitBreakerCooldown": 60,
+      "swarmTaskRetry": true,
+      "swarmMaxRetries": 2,
+      "trackErrorPatterns": true,
+      "errorPatternThreshold": 3
+    },
+    "toolReinforcement": {
+      "enabled": true,
+      "preValidation": true,
+      "enforceSecurityPolicy": true,
+      "adaptiveSelection": true,
+      "trackModelToolPerformance": true,
+      "feedbackToProfiler": true,
+      "feedbackInterval": 100,
+      "minCallsForConfidence": 5,
+      "defaultConfidence": 0.7,
+      "errorWarningThreshold": 3,
+      "suggestAlternativeThreshold": 0.5,
+      "advisorStoragePath": "~/.gigabot/tool_advisor.json"
+    },
+    "intentTracking": {
+      "enabled": true,
+      "analysisModel": "moonshot/kimi-k2.5",
+      "trackPatterns": true,
+      "patternAnalysisIntervalHours": 24,
+      "maxHistoryDays": 90,
+      "categories": [
+        "work",
+        "personal",
+        "learning",
+        "creative",
+        "technical",
+        "communication"
+      ]
+    },
+    "memoryEvolution": {
+      "enabled": true,
+      "evolutionIntervalHours": 24,
+      "autoPromote": true,
+      "promotionAccessThreshold": 3,
+      "promotionWindowDays": 7,
+      "autoExpire": true,
+      "decayInactiveDays": 30,
+      "autoArchive": true,
+      "archiveAfterDays": 90,
+      "minImportanceThreshold": 0.1,
+      "autoConsolidate": true,
+      "consolidationThreshold": 0.85
+    },
+    "costOptimization": {
+      "enabled": true,
+      "responseCaching": true,
+      "cacheMaxSize": 1000,
+      "cacheTtlSeconds": 3600,
+      "cacheSimilarityThreshold": 0.95,
+      "dailyBudgetUsd": 0.0,
+      "weeklyBudgetUsd": 0.0,
+      "alertThreshold": 0.8,
+      "autoDowngradeOnBudget": false,
+      "contextPruning": true,
+      "suggestModelDowngrades": true,
+      "cacheStoragePath": "~/.gigabot/cache.json"
+    },
+    "proactive": {
+      "enabled": true,
+      "maxDailyActions": 10,
+      "requireConfirmation": true,
+      "enableReminders": true,
+      "enableSuggestions": true,
+      "enableAutomation": false,
+      "enableInsights": true,
+      "enableAnticipation": true,
+      "automationAllowlist": [],
+      "learnFromFeedback": true,
+      "minAcceptanceRate": 0.3
     }
   },
   "channels": {
+    "whatsapp": {
+      "enabled": false,
+      "bridgeUrl": "ws://localhost:3001",
+      "allowFrom": []
+    },
     "telegram": {
-      "enabled": false
+      "enabled": false,
+      "token": "",
+      "allowFrom": []
     },
     "discord": {
-      "enabled": false
-    },
-    "whatsapp": {
-      "enabled": false
+      "enabled": false,
+      "token": "",
+      "applicationId": "",
+      "allowGuilds": [],
+      "allowChannels": [],
+      "allowUsers": []
     },
     "signal": {
-      "enabled": false
+      "enabled": false,
+      "phoneNumber": "",
+      "signalCliPath": "signal-cli",
+      "configPath": "",
+      "allowFrom": []
     },
     "matrix": {
-      "enabled": false
+      "enabled": false,
+      "homeserver": "",
+      "userId": "",
+      "accessToken": "",
+      "password": "",
+      "deviceId": "",
+      "enableEncryption": false,
+      "allowRooms": []
     },
     "slack": {
-      "enabled": false
+      "enabled": false,
+      "botToken": "",
+      "appToken": "",
+      "signingSecret": "",
+      "allowChannels": [],
+      "allowUsers": []
     }
   },
-  "nodes": {
-    "enabled": true,
-    "autoApprove": true,
-    "pingInterval": 30
-  },
-  "security": {
-    "auth": {
-      "mode": "none"
+  "providers": {
+    "anthropic": {
+      "apiKey": "",
+      "apiBase": null,
+      "authType": "api-key",
+      "apiFormat": "openai"
     },
-    "toolPolicy": {
-      "allow": ["*"],
-      "deny": [],
-      "requireApproval": []
+    "openai": {
+      "apiKey": "",
+      "apiBase": null,
+      "authType": "api-key",
+      "apiFormat": "openai"
     },
-    "sandbox": {
-      "mode": "off",
-      "workspaceAccess": "rw"
+    "openrouter": {
+      "apiKey": "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",
+      "apiBase": "https://openrouter.ai/api/v1",
+      "authType": "api-key",
+      "apiFormat": "openai"
+    },
+    "vllm": {
+      "apiKey": "",
+      "apiBase": null,
+      "authType": "api-key",
+      "apiFormat": "openai"
+    },
+    "moonshot": {
+      "apiKey": "",
+      "apiBase": "https://api.moonshot.cn/v1",
+      "authType": "api-key",
+      "apiFormat": "openai"
+    },
+    "glm": {
+      "apiKey": "",
+      "apiBase": "https://open.bigmodel.cn/api/paas/v4",
+      "authType": "api-key",
+      "apiFormat": "openai"
+    },
+    "deepseek": {
+      "apiKey": "",
+      "apiBase": "https://api.deepseek.com/v1",
+      "authType": "api-key",
+      "apiFormat": "openai"
+    },
+    "qwen": {
+      "apiKey": "",
+      "apiBase": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "authType": "oauth",
+      "apiFormat": "openai"
+    },
+    "ollama": {
+      "apiKey": "",
+      "apiBase": "http://localhost:11434/v1",
+      "authType": "api-key",
+      "apiFormat": "openai"
+    },
+    "failover": {
+      "primary": "",
+      "fallbacks": [],
+      "cooldownSeconds": 300
+    },
+    "gateways": {
+      "gateways": [],
+      "cooldownSeconds": 300,
+      "maxRetries": 3
     }
+  },
+  "gateway": {
+    "host": "0.0.0.0",
+    "port": 18790,
+    "websocketPort": 18791,
+    "enableHttpApi": true,
+    "enableWebsocket": true
   },
   "tools": {
     "web": {
       "search": {
-        "enabled": true,
-        "apiKey": ""
+        "apiKey": "",
+        "maxResults": 5
       }
     }
+  },
+  "security": {
+    "auth": {
+      "mode": "none",
+      "token": "",
+      "passwordHash": "",
+      "passwordSalt": "",
+      "pinHash": "",
+      "pinSalt": "",
+      "requirePin": true,
+      "sessionDurationDays": 7,
+      "tailscaleRequiredUser": "",
+      "pairedDevices": [],
+      "requirePairing": false,
+      "setupComplete": false
+    },
+    "toolPolicy": {
+      "allow": [
+        "*"
+      ],
+      "deny": [],
+      "requireApproval": [],
+      "requireElevated": [
+        "gateway"
+      ]
+    },
+    "sandbox": {
+      "mode": "off",
+      "scope": "session",
+      "workspaceAccess": "rw",
+      "docker": {
+        "image": "debian:bookworm-slim",
+        "readOnlyRoot": true,
+        "network": "none",
+        "capDrop": [
+          "ALL"
+        ],
+        "tmpfs": [
+          "/tmp",
+          "/var/tmp",
+          "/run"
+        ],
+        "pidsLimit": 100,
+        "memory": "512m"
+      }
+    },
+    "encryption": {
+      "encryptConfig": false,
+      "encryptMemory": false,
+      "encryptSessions": false
+    }
+  },
+  "heartbeat": {
+    "enabled": true,
+    "everySeconds": 1800
+  },
+  "tracking": {
+    "enabled": true,
+    "dailyBudget": 0,
+    "weeklyBudget": 0,
+    "alertThreshold": 0.8
+  },
+  "nodes": {
+    "enabled": true,
+    "authToken": "",
+    "autoApprove": true,
+    "pingInterval": 30,
+    "storagePath": "~/.gigabot/nodes.json"
+  },
+  "exec": {
+    "host": "local",
+    "node": "",
+    "fallbackToLocal": true,
+    "timeout": 60,
+    "allowByDefault": false,
+    "useDefaultSafe": true,
+    "useDefaultDeny": true
   }
 }

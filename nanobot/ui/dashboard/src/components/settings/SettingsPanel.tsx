@@ -24,14 +24,16 @@ import {
   Layers,
   Users,
   Brain,
-  Settings2
+  Settings2,
+  Check
 } from 'lucide-react'
 import { useUIStore } from '@/stores/uiStore'
 import { useConfig } from '@/hooks/useStatus'
 import { cn } from '@/lib/utils'
 import { api } from '@/lib/api'
 import { UserModeToggle } from './UserModeToggle'
-import type { Gateway, GatewayProvider } from '@/types'
+import { useToast } from '@/components/ui/Toast'
+import type { Gateway, GatewayProvider, RoutingConfig, MemoryConfig, TeamConfigResponse } from '@/types'
 
 type SettingsTab = 'general' | 'security' | 'notifications' | 'advanced' | 'providers' | 'routing' | 'team' | 'memory'
 
@@ -49,6 +51,7 @@ const PROVIDER_INFO: Record<GatewayProvider, { name: string; icon: string; color
 
 export function SettingsPanel() {
   const queryClient = useQueryClient()
+  const toast = useToast()
   const [activeTab, setActiveTab] = useState<SettingsTab>('general')
   const { theme, toggleTheme, authToken, setAuthToken } = useUIStore()
   const { data: config, isLoading } = useConfig()
@@ -67,6 +70,201 @@ export function SettingsPanel() {
     is_fallback: true,
   })
   const [testingGatewayId, setTestingGatewayId] = useState<string | null>(null)
+
+  // Provider API keys state
+  const [providerKeys, setProviderKeys] = useState<Record<GatewayProvider, string>>({
+    openrouter: '',
+    anthropic: '',
+    openai: '',
+    moonshot: '',
+    deepseek: '',
+    glm: '',
+    qwen: '',
+    ollama: '',
+    vllm: '',
+  })
+  const [savingProvider, setSavingProvider] = useState<string | null>(null)
+
+  // Routing state
+  const [routingEnabled, setRoutingEnabled] = useState(true)
+  const [fallbackEnabled, setFallbackEnabled] = useState(true)
+  const [tierModels, setTierModels] = useState<Record<string, string>>({
+    tier1: 'anthropic/claude-opus-4.5',
+    tier2: 'anthropic/claude-sonnet-4.5',
+    tier3: 'google/gemini-3-flash',
+  })
+
+  // Memory state
+  const [memoryEnabled, setMemoryEnabled] = useState(true)
+  const [vectorSearch, setVectorSearch] = useState(true)
+  const [contextMemories, setContextMemories] = useState(5)
+
+  // Team state
+  const [teamEnabled, setTeamEnabled] = useState(false)
+  const [qaGateEnabled, setQaGateEnabled] = useState(true)
+  const [auditGateEnabled, setAuditGateEnabled] = useState(true)
+  const [swarmEnabled, setSwarmEnabled] = useState(false)
+  const [maxWorkers, setMaxWorkers] = useState(3)
+
+  // Fetch providers
+  const { data: providersData } = useQuery({
+    queryKey: ['providers'],
+    queryFn: () => api.getProviders(),
+    staleTime: 30000,
+  })
+
+  // Fetch routing config
+  const { data: routingData } = useQuery({
+    queryKey: ['routing'],
+    queryFn: () => api.getRouting(),
+    staleTime: 30000,
+  })
+
+  // Fetch memory config
+  const { data: memoryData } = useQuery({
+    queryKey: ['memoryConfig'],
+    queryFn: () => api.getMemoryConfig(),
+    staleTime: 30000,
+  })
+
+  // Fetch team config
+  const { data: teamData } = useQuery({
+    queryKey: ['teamConfig'],
+    queryFn: () => api.getTeamConfig(),
+    staleTime: 30000,
+  })
+
+  // Sync state with fetched data
+  useEffect(() => {
+    if (routingData) {
+      setRoutingEnabled(routingData.enabled)
+      if (routingData.tiers) {
+        const models: Record<string, string> = {}
+        Object.entries(routingData.tiers).forEach(([tier, config]) => {
+          if (config.models && config.models.length > 0) {
+            models[tier] = config.models[0]
+          }
+        })
+        if (Object.keys(models).length > 0) {
+          setTierModels(prev => ({ ...prev, ...models }))
+        }
+      }
+    }
+  }, [routingData])
+
+  useEffect(() => {
+    if (memoryData) {
+      setMemoryEnabled(memoryData.enabled)
+      setVectorSearch(memoryData.vector_search)
+      setContextMemories(memoryData.context_memories)
+    }
+  }, [memoryData])
+
+  useEffect(() => {
+    if (teamData) {
+      setTeamEnabled(teamData.team.enabled)
+      setQaGateEnabled(teamData.team.qa_gate_enabled)
+      setAuditGateEnabled(teamData.team.audit_gate_enabled)
+      setSwarmEnabled(teamData.swarm.enabled)
+      setMaxWorkers(teamData.swarm.max_workers)
+    }
+  }, [teamData])
+
+  // Provider mutation
+  const updateProviderMutation = useMutation({
+    mutationFn: ({ provider, apiKey }: { provider: string; apiKey: string }) =>
+      api.updateProvider(provider, { api_key: apiKey }),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['providers'] })
+      setSavingProvider(null)
+      // Clear the input after successful save
+      setProviderKeys(prev => ({ ...prev, [variables.provider]: '' }))
+      toast.success(`${variables.provider} API key saved successfully`)
+    },
+    onError: (error, variables) => {
+      setSavingProvider(null)
+      toast.error(`Failed to save ${variables.provider} API key: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    },
+  })
+
+  // Routing mutation
+  const updateRoutingMutation = useMutation({
+    mutationFn: (data: Partial<RoutingConfig>) => api.updateRouting(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['routing'] })
+      toast.success('Routing configuration saved')
+    },
+    onError: (error) => {
+      toast.error(`Failed to save routing: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    },
+  })
+
+  // Memory mutation
+  const updateMemoryMutation = useMutation({
+    mutationFn: (data: Partial<MemoryConfig>) => api.updateMemoryConfig(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['memoryConfig'] })
+      toast.success('Memory configuration saved')
+    },
+    onError: (error) => {
+      toast.error(`Failed to save memory settings: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    },
+  })
+
+  // Team mutation
+  const updateTeamMutation = useMutation({
+    mutationFn: (data: { team?: Partial<TeamConfigResponse['team']>; swarm?: Partial<TeamConfigResponse['swarm']> }) =>
+      api.updateTeamConfig(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['teamConfig'] })
+      toast.success('Team configuration saved')
+    },
+    onError: (error) => {
+      toast.error(`Failed to save team settings: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    },
+  })
+
+  // Handler functions
+  const handleSaveProviderKey = (provider: GatewayProvider) => {
+    const apiKey = providerKeys[provider]
+    if (apiKey.trim()) {
+      setSavingProvider(provider)
+      updateProviderMutation.mutate({ provider, apiKey })
+    }
+  }
+
+  const handleSaveRouting = () => {
+    updateRoutingMutation.mutate({
+      enabled: routingEnabled,
+      tiers: {
+        tier1: { models: [tierModels.tier1], triggers: ['complex', 'reasoning'] },
+        tier2: { models: [tierModels.tier2], triggers: ['general'] },
+        tier3: { models: [tierModels.tier3], triggers: ['simple', 'fast'] },
+      },
+    })
+  }
+
+  const handleSaveMemory = () => {
+    updateMemoryMutation.mutate({
+      enabled: memoryEnabled,
+      vector_search: vectorSearch,
+      context_memories: contextMemories,
+    })
+  }
+
+  const handleSaveTeam = () => {
+    updateTeamMutation.mutate({
+      team: {
+        enabled: teamEnabled,
+        qa_gate_enabled: qaGateEnabled,
+        audit_gate_enabled: auditGateEnabled,
+      },
+      swarm: {
+        enabled: swarmEnabled,
+        max_workers: maxWorkers,
+      },
+    })
+  }
 
   // Fetch gateways
   const { data: gatewaysData, isLoading: gatewaysLoading } = useQuery({
@@ -89,6 +287,10 @@ export function SettingsPanel() {
         is_primary: false,
         is_fallback: true,
       })
+      toast.success('Gateway added successfully')
+    },
+    onError: (error) => {
+      toast.error(`Failed to add gateway: ${error instanceof Error ? error.message : 'Unknown error'}`)
     },
   })
 
@@ -98,6 +300,10 @@ export function SettingsPanel() {
       api.updateGateway(id, updates),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['gateways'] })
+      toast.success('Gateway updated')
+    },
+    onError: (error) => {
+      toast.error(`Failed to update gateway: ${error instanceof Error ? error.message : 'Unknown error'}`)
     },
   })
 
@@ -106,6 +312,10 @@ export function SettingsPanel() {
     mutationFn: (id: string) => api.deleteGateway(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['gateways'] })
+      toast.success('Gateway deleted')
+    },
+    onError: (error) => {
+      toast.error(`Failed to delete gateway: ${error instanceof Error ? error.message : 'Unknown error'}`)
     },
   })
 
@@ -114,6 +324,16 @@ export function SettingsPanel() {
     mutationFn: (id: string) => {
       setTestingGatewayId(id)
       return api.testGateway(id)
+    },
+    onSuccess: (result) => {
+      if (result.success) {
+        toast.success('Gateway connection successful')
+      } else {
+        toast.warning(`Gateway test: ${result.error || 'Connection issue'}`)
+      }
+    },
+    onError: (error) => {
+      toast.error(`Gateway test failed: ${error instanceof Error ? error.message : 'Unknown error'}`)
     },
     onSettled: () => {
       setTestingGatewayId(null)
@@ -150,6 +370,7 @@ export function SettingsPanel() {
 
   const standardTabs = [
     { id: 'general' as const, label: 'General', icon: <Palette size={18} /> },
+    { id: 'providers' as const, label: 'Providers', icon: <Server size={18} /> },
     { id: 'security' as const, label: 'Security', icon: <Shield size={18} /> },
     { id: 'notifications' as const, label: 'Notifications', icon: <Bell size={18} /> },
   ]
@@ -268,286 +489,14 @@ export function SettingsPanel() {
 
           {activeTab === 'security' && (
             <>
-              {/* LLM Gateways */}
-              <div className="card">
-                <div className="flex items-center justify-between mb-4">
-                  <div>
-                    <h3 className="font-semibold text-white flex items-center gap-2">
-                      <Server size={18} />
-                      LLM Gateways
-                    </h3>
-                    <p className="text-xs text-gray-500 mt-1">
-                      Configure API gateways with automatic fallback
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => setShowAddGateway(true)}
-                    className="btn-primary flex items-center gap-2 text-sm"
-                  >
-                    <Plus size={16} />
-                    Add Gateway
-                  </button>
-                </div>
-
-                {/* Gateway List */}
-                <div className="space-y-3">
-                  {gatewaysLoading ? (
-                    <div className="flex items-center justify-center py-8 text-gray-400">
-                      <Loader2 size={20} className="animate-spin mr-2" />
-                      Loading gateways...
-                    </div>
-                  ) : gatewaysData?.gateways.length === 0 ? (
-                    <div className="text-center py-8 text-gray-500">
-                      <Server size={32} className="mx-auto mb-2 opacity-50" />
-                      <p>No gateways configured</p>
-                      <p className="text-xs mt-1">Add a gateway to connect to an LLM provider</p>
-                    </div>
-                  ) : (
-                    gatewaysData?.gateways.map((gateway) => (
-                      <div
-                        key={gateway.id}
-                        className={cn(
-                          'p-4 rounded-lg border transition-colors',
-                          gateway.enabled
-                            ? 'bg-giga-hover border-sidebar-border'
-                            : 'bg-giga-card/50 border-sidebar-border/50 opacity-60'
-                        )}
-                      >
-                        <div className="flex items-start justify-between">
-                          <div className="flex items-center gap-3">
-                            <span className="text-2xl">
-                              {PROVIDER_INFO[gateway.provider]?.icon || '🔌'}
-                            </span>
-                            <div>
-                              <div className="flex items-center gap-2">
-                                <span className="font-medium text-white">{gateway.name}</span>
-                                {gateway.is_primary && (
-                                  <span className="px-2 py-0.5 text-xs bg-giga-accent text-white rounded-full flex items-center gap-1">
-                                    <Star size={10} fill="currentColor" />
-                                    Primary
-                                  </span>
-                                )}
-                                {gateway.is_fallback && !gateway.is_primary && (
-                                  <span className="px-2 py-0.5 text-xs bg-giga-warning/20 text-giga-warning rounded-full flex items-center gap-1">
-                                    <Zap size={10} />
-                                    Fallback
-                                  </span>
-                                )}
-                              </div>
-                              <div className="flex items-center gap-2 mt-1">
-                                <span className={cn('text-xs', PROVIDER_INFO[gateway.provider]?.color)}>
-                                  {PROVIDER_INFO[gateway.provider]?.name}
-                                </span>
-                                <span className="text-gray-600">•</span>
-                                {gateway.health_status === 'healthy' && (
-                                  <span className="flex items-center gap-1 text-xs text-giga-success">
-                                    <CheckCircle size={12} />
-                                    Healthy
-                                  </span>
-                                )}
-                                {gateway.health_status === 'unhealthy' && (
-                                  <span className="flex items-center gap-1 text-xs text-giga-error">
-                                    <XCircle size={12} />
-                                    Unhealthy
-                                  </span>
-                                )}
-                                {gateway.health_status === 'unknown' && (
-                                  <span className="flex items-center gap-1 text-xs text-gray-400">
-                                    <AlertCircle size={12} />
-                                    Not tested
-                                  </span>
-                                )}
-                              </div>
-                              {gateway.last_error && (
-                                <p className="text-xs text-giga-error mt-1">{gateway.last_error}</p>
-                              )}
-                            </div>
-                          </div>
-                          
-                          <div className="flex items-center gap-2">
-                            <button
-                              onClick={() => testGatewayMutation.mutate(gateway.id)}
-                              disabled={testingGatewayId === gateway.id}
-                              className="p-2 hover:bg-giga-card rounded-lg text-gray-400 hover:text-white transition-colors"
-                              title="Test connection"
-                            >
-                              {testingGatewayId === gateway.id ? (
-                                <Loader2 size={16} className="animate-spin" />
-                              ) : (
-                                <TestTube size={16} />
-                              )}
-                            </button>
-                            {!gateway.is_primary && (
-                              <button
-                                onClick={() => handleSetPrimary(gateway.id)}
-                                className="p-2 hover:bg-giga-card rounded-lg text-gray-400 hover:text-giga-accent transition-colors"
-                                title="Set as primary"
-                              >
-                                <Star size={16} />
-                              </button>
-                            )}
-                            <button
-                              onClick={() => deleteGatewayMutation.mutate(gateway.id)}
-                              className="p-2 hover:bg-giga-error/20 rounded-lg text-gray-400 hover:text-giga-error transition-colors"
-                              title="Delete gateway"
-                            >
-                              <Trash2 size={16} />
-                            </button>
-                          </div>
-                        </div>
-                        
-                        {/* Gateway actions row */}
-                        <div className="flex items-center gap-4 mt-3 pt-3 border-t border-sidebar-border/50">
-                          <label className="flex items-center gap-2 cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={gateway.enabled}
-                              onChange={() => handleToggleEnabled(gateway)}
-                              className="rounded border-gray-600 bg-giga-card text-giga-accent focus:ring-giga-accent"
-                            />
-                            <span className="text-xs text-gray-400">Enabled</span>
-                          </label>
-                          <label className="flex items-center gap-2 cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={gateway.is_fallback}
-                              onChange={() => handleToggleFallback(gateway)}
-                              disabled={gateway.is_primary}
-                              className="rounded border-gray-600 bg-giga-card text-giga-warning focus:ring-giga-warning disabled:opacity-50"
-                            />
-                            <span className="text-xs text-gray-400">Use as fallback</span>
-                          </label>
-                          <span className="text-xs text-gray-500">
-                            Priority: {gateway.priority}
-                          </span>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-
-                {/* Add Gateway Modal */}
-                {showAddGateway && (
-                  <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-                    <div className="bg-giga-dark border border-sidebar-border rounded-xl p-6 w-full max-w-md">
-                      <h3 className="text-lg font-semibold text-white mb-4">Add New Gateway</h3>
-                      
-                      <div className="space-y-4">
-                        <div>
-                          <label className="block text-sm font-medium text-gray-300 mb-2">
-                            Provider
-                          </label>
-                          <select
-                            value={newGateway.provider}
-                            onChange={(e) => setNewGateway({
-                              ...newGateway,
-                              provider: e.target.value as GatewayProvider,
-                              name: newGateway.name || `${PROVIDER_INFO[e.target.value as GatewayProvider]?.name} Gateway`,
-                            })}
-                            className="input w-full"
-                          >
-                            {Object.entries(PROVIDER_INFO).map(([key, info]) => (
-                              <option key={key} value={key}>
-                                {info.icon} {info.name}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                        
-                        <div>
-                          <label className="block text-sm font-medium text-gray-300 mb-2">
-                            Name
-                          </label>
-                          <input
-                            type="text"
-                            value={newGateway.name}
-                            onChange={(e) => setNewGateway({ ...newGateway, name: e.target.value })}
-                            placeholder="My Gateway"
-                            className="input w-full"
-                          />
-                        </div>
-                        
-                        <div>
-                          <label className="block text-sm font-medium text-gray-300 mb-2">
-                            API Key
-                          </label>
-                          <input
-                            type="password"
-                            value={newGateway.api_key}
-                            onChange={(e) => setNewGateway({ ...newGateway, api_key: e.target.value })}
-                            placeholder="sk-..."
-                            className="input w-full font-mono"
-                          />
-                        </div>
-                        
-                        <div>
-                          <label className="block text-sm font-medium text-gray-300 mb-2">
-                            API Base URL (optional)
-                          </label>
-                          <input
-                            type="text"
-                            value={newGateway.api_base}
-                            onChange={(e) => setNewGateway({ ...newGateway, api_base: e.target.value })}
-                            placeholder="https://api.example.com/v1"
-                            className="input w-full"
-                          />
-                        </div>
-                        
-                        <div className="flex items-center gap-4">
-                          <label className="flex items-center gap-2 cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={newGateway.is_primary}
-                              onChange={(e) => setNewGateway({ ...newGateway, is_primary: e.target.checked })}
-                              className="rounded border-gray-600 bg-giga-card text-giga-accent"
-                            />
-                            <span className="text-sm text-gray-300">Set as primary</span>
-                          </label>
-                          <label className="flex items-center gap-2 cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={newGateway.is_fallback}
-                              onChange={(e) => setNewGateway({ ...newGateway, is_fallback: e.target.checked })}
-                              className="rounded border-gray-600 bg-giga-card text-giga-warning"
-                            />
-                            <span className="text-sm text-gray-300">Use as fallback</span>
-                          </label>
-                        </div>
-                      </div>
-                      
-                      <div className="flex justify-end gap-3 mt-6">
-                        <button
-                          onClick={() => setShowAddGateway(false)}
-                          className="btn-secondary"
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          onClick={() => addGatewayMutation.mutate(newGateway)}
-                          disabled={!newGateway.api_key || addGatewayMutation.isPending}
-                          className="btn-primary flex items-center gap-2"
-                        >
-                          {addGatewayMutation.isPending ? (
-                            <Loader2 size={16} className="animate-spin" />
-                          ) : (
-                            <Plus size={16} />
-                          )}
-                          Add Gateway
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-
               {/* Auth Token */}
               <div className="card">
-                <h3 className="font-semibold text-white mb-4">Authentication</h3>
+                <h3 className="font-semibold text-white mb-4">Dashboard Access</h3>
                 <div className="space-y-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-300 mb-2">
                       <Key size={14} className="inline mr-2" />
-                      API Token
+                      Dashboard Token
                     </label>
                     <div className="flex gap-2">
                       <input
@@ -567,7 +516,8 @@ export function SettingsPanel() {
                       </button>
                     </div>
                     <p className="text-xs text-gray-500 mt-2">
-                      This token is stored locally and used for API authentication
+                      This token is used to secure access to the GigaBot dashboard and API. 
+                      It is NOT for LLM providers (use the Providers tab for that).
                     </p>
                   </div>
                 </div>
@@ -616,31 +566,70 @@ export function SettingsPanel() {
             </div>
           )}
 
-          {/* Providers Tab - Advanced only */}
-          {activeTab === 'providers' && isAdvanced && (
+          {/* Providers Tab - Available in both modes */}
+          {activeTab === 'providers' && (
             <>
               <div className="card">
-                <h3 className="font-semibold text-white mb-4">Provider API Keys</h3>
-                <p className="text-xs text-gray-500 mb-4">Configure API keys for each provider individually</p>
+                <h3 className="font-semibold text-white mb-4">LLM Providers & Gateways</h3>
+                <p className="text-xs text-gray-500 mb-4">
+                  Configure API keys for LLM providers. OpenRouter is the default gateway.
+                </p>
                 <div className="space-y-4">
-                  {Object.entries(PROVIDER_INFO).map(([key, info]) => (
-                    <div key={key} className="p-4 bg-giga-hover rounded-lg">
-                      <div className="flex items-center gap-3 mb-3">
-                        <span className="text-xl">{info.icon}</span>
-                        <span className={cn('font-medium', info.color)}>{info.name}</span>
+                  {Object.entries(PROVIDER_INFO).map(([key, info]) => {
+                    const provider = key as GatewayProvider
+                    const hasKey = providersData?.providers?.[provider]?.has_key || false
+                    const isSaving = savingProvider === provider
+                    const isDefault = provider === 'openrouter'
+                    
+                    return (
+                      <div key={key} className={cn(
+                        "p-4 rounded-lg border transition-colors",
+                        hasKey ? "bg-giga-hover border-giga-success/30" : "bg-giga-card border-sidebar-border"
+                      )}>
+                        <div className="flex items-center justify-between mb-3">
+                          <div className="flex items-center gap-3">
+                            <span className="text-xl">{info.icon}</span>
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className={cn('font-medium', info.color)}>{info.name}</span>
+                                {isDefault && (
+                                  <span className="px-2 py-0.5 text-[10px] bg-giga-accent/20 text-giga-accent rounded-full border border-giga-accent/30">
+                                    Default Gateway
+                                  </span>
+                                )}
+                              </div>
+                              {hasKey && (
+                                <div className="flex items-center gap-1 text-xs text-giga-success mt-1">
+                                  <CheckCircle size={12} />
+                                  <span>Active & Ready</span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          <input
+                            type="password"
+                            placeholder={hasKey ? '••••••••••••••••' : `Enter ${info.name} API Key`}
+                            value={providerKeys[provider]}
+                            onChange={(e) => setProviderKeys(prev => ({ ...prev, [provider]: e.target.value }))}
+                            className="input flex-1 font-mono text-sm"
+                          />
+                          <button 
+                            className="btn-secondary flex items-center gap-2"
+                            onClick={() => handleSaveProviderKey(provider)}
+                            disabled={isSaving || !providerKeys[provider].trim()}
+                          >
+                            {isSaving ? (
+                              <Loader2 size={16} className="animate-spin" />
+                            ) : (
+                              <Save size={16} />
+                            )}
+                          </button>
+                        </div>
                       </div>
-                      <div className="flex gap-2">
-                        <input
-                          type="password"
-                          placeholder={`${info.name} API Key...`}
-                          className="input flex-1 font-mono text-sm"
-                        />
-                        <button className="btn-secondary">
-                          <Save size={16} />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
               </div>
             </>
@@ -655,9 +644,9 @@ export function SettingsPanel() {
                 
                 <div className="space-y-4">
                   {[
-                    { tier: 'Tier 1', description: 'Most capable, used for complex reasoning', color: 'purple' },
-                    { tier: 'Tier 2', description: 'Balanced performance and cost', color: 'blue' },
-                    { tier: 'Tier 3', description: 'Fast responses, lower cost', color: 'green' },
+                    { key: 'tier1', tier: 'Tier 1', description: 'Most capable, used for complex reasoning', color: 'purple' },
+                    { key: 'tier2', tier: 'Tier 2', description: 'Balanced performance and cost', color: 'blue' },
+                    { key: 'tier3', tier: 'Tier 3', description: 'Fast responses, lower cost', color: 'green' },
                   ].map((t) => (
                     <div key={t.tier} className={cn('p-4 rounded-lg border', `border-${t.color}-500/30 bg-${t.color}-500/10`)}>
                       <div className="flex items-center justify-between mb-3">
@@ -666,12 +655,20 @@ export function SettingsPanel() {
                           <p className="text-xs text-gray-500">{t.description}</p>
                         </div>
                       </div>
-                      <select className="input w-full">
-                        <option>gpt-4-turbo (OpenAI)</option>
-                        <option>claude-3-opus (Anthropic)</option>
-                        <option>gpt-4 (OpenAI)</option>
-                        <option>claude-3-sonnet (Anthropic)</option>
-                        <option>gpt-3.5-turbo (OpenAI)</option>
+                      <select 
+                        className="input w-full"
+                        value={tierModels[t.key] || ''}
+                        onChange={(e) => setTierModels(prev => ({ ...prev, [t.key]: e.target.value }))}
+                      >
+                        <option value="moonshot/kimi-k2.5">KIMI K2.5 (Moonshot AI)</option>
+                        <option value="anthropic/claude-opus-4.5">Claude Opus 4.5 (Anthropic)</option>
+                        <option value="anthropic/claude-sonnet-4.5">Claude Sonnet 4.5 (Anthropic)</option>
+                        <option value="google/gemini-3-pro">Gemini 3 Pro (Google)</option>
+                        <option value="google/gemini-3-flash">Gemini 3 Flash (Google)</option>
+                        <option value="openai/gpt-5.2">GPT 5.2 (OpenAI)</option>
+                        <option value="stepfun/step-3.5-flash">Step 3.5 Flash (StepFun)</option>
+                        <option value="deepseek/deepseek-v3.2">Deepseek V3.2 (Deepseek)</option>
+                        <option value="glm/glm-4.7">GLM 4.7 (Zhipu AI)</option>
                       </select>
                     </div>
                   ))}
@@ -686,21 +683,52 @@ export function SettingsPanel() {
                       <p className="text-sm text-gray-300">Enable Tiered Routing</p>
                       <p className="text-xs text-gray-500">Automatically select model based on task complexity</p>
                     </div>
-                    <div className="w-12 h-6 rounded-full bg-giga-success relative">
-                      <span className="absolute right-1 top-1 w-4 h-4 rounded-full bg-white" />
-                    </div>
+                    <button
+                      onClick={() => setRoutingEnabled(!routingEnabled)}
+                      className={cn(
+                        'w-12 h-6 rounded-full relative transition-colors',
+                        routingEnabled ? 'bg-giga-success' : 'bg-gray-600'
+                      )}
+                    >
+                      <span className={cn(
+                        'absolute top-1 w-4 h-4 rounded-full bg-white transition-all',
+                        routingEnabled ? 'right-1' : 'left-1'
+                      )} />
+                    </button>
                   </label>
                   <label className="flex items-center justify-between p-3 bg-giga-hover rounded-lg cursor-pointer">
                     <div>
                       <p className="text-sm text-gray-300">Fallback on Error</p>
                       <p className="text-xs text-gray-500">Try next tier if current tier fails</p>
                     </div>
-                    <div className="w-12 h-6 rounded-full bg-giga-success relative">
-                      <span className="absolute right-1 top-1 w-4 h-4 rounded-full bg-white" />
-                    </div>
+                    <button
+                      onClick={() => setFallbackEnabled(!fallbackEnabled)}
+                      className={cn(
+                        'w-12 h-6 rounded-full relative transition-colors',
+                        fallbackEnabled ? 'bg-giga-success' : 'bg-gray-600'
+                      )}
+                    >
+                      <span className={cn(
+                        'absolute top-1 w-4 h-4 rounded-full bg-white transition-all',
+                        fallbackEnabled ? 'right-1' : 'left-1'
+                      )} />
+                    </button>
                   </label>
                 </div>
               </div>
+
+              <button 
+                className="btn-primary w-full flex items-center justify-center gap-2"
+                onClick={handleSaveRouting}
+                disabled={updateRoutingMutation.isPending}
+              >
+                {updateRoutingMutation.isPending ? (
+                  <Loader2 size={16} className="animate-spin" />
+                ) : (
+                  <Save size={16} />
+                )}
+                Save Routing Configuration
+              </button>
             </>
           )}
 
@@ -710,34 +738,71 @@ export function SettingsPanel() {
               <div className="card">
                 <h3 className="font-semibold text-white mb-4">Memory Configuration</h3>
                 <div className="space-y-4">
-                  <div className="flex items-center justify-between py-2 border-b border-sidebar-border">
+                  <label className="flex items-center justify-between py-2 border-b border-sidebar-border cursor-pointer">
                     <div>
-                      <p className="text-sm text-gray-300">Vector Store</p>
-                      <p className="text-xs text-gray-500">Storage backend for embeddings</p>
+                      <p className="text-sm text-gray-300">Enable Memory System</p>
+                      <p className="text-xs text-gray-500">Store and retrieve conversation context</p>
                     </div>
-                    <select className="input w-40">
-                      <option>ChromaDB</option>
-                      <option>Pinecone</option>
-                      <option>Weaviate</option>
-                      <option>FAISS</option>
-                    </select>
-                  </div>
-                  <div className="flex items-center justify-between py-2 border-b border-sidebar-border">
+                    <button
+                      onClick={() => setMemoryEnabled(!memoryEnabled)}
+                      className={cn(
+                        'w-12 h-6 rounded-full relative transition-colors',
+                        memoryEnabled ? 'bg-giga-success' : 'bg-gray-600'
+                      )}
+                    >
+                      <span className={cn(
+                        'absolute top-1 w-4 h-4 rounded-full bg-white transition-all',
+                        memoryEnabled ? 'right-1' : 'left-1'
+                      )} />
+                    </button>
+                  </label>
+                  <label className="flex items-center justify-between py-2 border-b border-sidebar-border cursor-pointer">
                     <div>
-                      <p className="text-sm text-gray-300">Chunk Size</p>
-                      <p className="text-xs text-gray-500">Size of text chunks for embedding</p>
+                      <p className="text-sm text-gray-300">Vector Search</p>
+                      <p className="text-xs text-gray-500">Enable semantic search for memories</p>
                     </div>
-                    <input type="number" defaultValue={512} className="input w-24 text-center" />
-                  </div>
+                    <button
+                      onClick={() => setVectorSearch(!vectorSearch)}
+                      className={cn(
+                        'w-12 h-6 rounded-full relative transition-colors',
+                        vectorSearch ? 'bg-giga-success' : 'bg-gray-600'
+                      )}
+                    >
+                      <span className={cn(
+                        'absolute top-1 w-4 h-4 rounded-full bg-white transition-all',
+                        vectorSearch ? 'right-1' : 'left-1'
+                      )} />
+                    </button>
+                  </label>
                   <div className="flex items-center justify-between py-2">
                     <div>
-                      <p className="text-sm text-gray-300">Top K Results</p>
-                      <p className="text-xs text-gray-500">Number of results to retrieve</p>
+                      <p className="text-sm text-gray-300">Context Memories</p>
+                      <p className="text-xs text-gray-500">Number of memories to include in context</p>
                     </div>
-                    <input type="number" defaultValue={5} className="input w-24 text-center" />
+                    <input 
+                      type="number" 
+                      value={contextMemories} 
+                      onChange={(e) => setContextMemories(parseInt(e.target.value) || 5)}
+                      min={1}
+                      max={20}
+                      className="input w-24 text-center" 
+                    />
                   </div>
                 </div>
               </div>
+
+              <button 
+                className="btn-primary w-full flex items-center justify-center gap-2"
+                onClick={handleSaveMemory}
+                disabled={updateMemoryMutation.isPending}
+              >
+                {updateMemoryMutation.isPending ? (
+                  <Loader2 size={16} className="animate-spin" />
+                ) : (
+                  <Save size={16} />
+                )}
+                Save Memory Configuration
+              </button>
 
               <div className="card">
                 <h3 className="font-semibold text-white mb-4">Memory Actions</h3>
@@ -763,32 +828,60 @@ export function SettingsPanel() {
           {activeTab === 'team' && isAdvanced && (
             <>
               <div className="card">
-                <h3 className="font-semibold text-white mb-4">Team Role Configuration</h3>
-                <p className="text-xs text-gray-500 mb-4">Configure model assignments for each team role</p>
-                
+                <h3 className="font-semibold text-white mb-4">Team Configuration</h3>
                 <div className="space-y-4">
-                  {[
-                    { role: 'Lead', description: 'Coordinates and makes final decisions', icon: '👑' },
-                    { role: 'Researcher', description: 'Gathers and analyzes information', icon: '🔍' },
-                    { role: 'Coder', description: 'Implements solutions', icon: '💻' },
-                    { role: 'Reviewer', description: 'Reviews and provides feedback', icon: '✅' },
-                  ].map((r) => (
-                    <div key={r.role} className="p-4 bg-giga-hover rounded-lg">
-                      <div className="flex items-center gap-3 mb-3">
-                        <span className="text-xl">{r.icon}</span>
-                        <div>
-                          <h4 className="font-medium text-white">{r.role}</h4>
-                          <p className="text-xs text-gray-500">{r.description}</p>
-                        </div>
-                      </div>
-                      <select className="input w-full">
-                        <option>gpt-4-turbo</option>
-                        <option>claude-3-opus</option>
-                        <option>gpt-4</option>
-                        <option>claude-3-sonnet</option>
-                      </select>
+                  <label className="flex items-center justify-between py-2 border-b border-sidebar-border cursor-pointer">
+                    <div>
+                      <p className="text-sm text-gray-300">Enable Team Mode</p>
+                      <p className="text-xs text-gray-500">Use multiple agents for complex tasks</p>
                     </div>
-                  ))}
+                    <button
+                      onClick={() => setTeamEnabled(!teamEnabled)}
+                      className={cn(
+                        'w-12 h-6 rounded-full relative transition-colors',
+                        teamEnabled ? 'bg-giga-success' : 'bg-gray-600'
+                      )}
+                    >
+                      <span className={cn(
+                        'absolute top-1 w-4 h-4 rounded-full bg-white transition-all',
+                        teamEnabled ? 'right-1' : 'left-1'
+                      )} />
+                    </button>
+                  </label>
+                  <label className="flex items-center justify-between py-2 border-b border-sidebar-border cursor-pointer">
+                    <div>
+                      <p className="text-sm text-gray-300">Enable Swarm</p>
+                      <p className="text-xs text-gray-500">Parallel worker agents for intensive tasks</p>
+                    </div>
+                    <button
+                      onClick={() => setSwarmEnabled(!swarmEnabled)}
+                      className={cn(
+                        'w-12 h-6 rounded-full relative transition-colors',
+                        swarmEnabled ? 'bg-giga-success' : 'bg-gray-600'
+                      )}
+                    >
+                      <span className={cn(
+                        'absolute top-1 w-4 h-4 rounded-full bg-white transition-all',
+                        swarmEnabled ? 'right-1' : 'left-1'
+                      )} />
+                    </button>
+                  </label>
+                  {swarmEnabled && (
+                    <div className="flex items-center justify-between py-2">
+                      <div>
+                        <p className="text-sm text-gray-300">Max Workers</p>
+                        <p className="text-xs text-gray-500">Maximum concurrent worker agents</p>
+                      </div>
+                      <input 
+                        type="number" 
+                        value={maxWorkers} 
+                        onChange={(e) => setMaxWorkers(parseInt(e.target.value) || 3)}
+                        min={1}
+                        max={10}
+                        className="input w-24 text-center" 
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -800,21 +893,52 @@ export function SettingsPanel() {
                       <p className="text-sm text-gray-300">Require Code Review</p>
                       <p className="text-xs text-gray-500">All code must pass reviewer before merging</p>
                     </div>
-                    <div className="w-12 h-6 rounded-full bg-giga-success relative">
-                      <span className="absolute right-1 top-1 w-4 h-4 rounded-full bg-white" />
-                    </div>
+                    <button
+                      onClick={() => setQaGateEnabled(!qaGateEnabled)}
+                      className={cn(
+                        'w-12 h-6 rounded-full relative transition-colors',
+                        qaGateEnabled ? 'bg-giga-success' : 'bg-gray-600'
+                      )}
+                    >
+                      <span className={cn(
+                        'absolute top-1 w-4 h-4 rounded-full bg-white transition-all',
+                        qaGateEnabled ? 'right-1' : 'left-1'
+                      )} />
+                    </button>
                   </label>
                   <label className="flex items-center justify-between p-3 bg-giga-hover rounded-lg cursor-pointer">
                     <div>
                       <p className="text-sm text-gray-300">Security Audit</p>
                       <p className="text-xs text-gray-500">Run security checks on all outputs</p>
                     </div>
-                    <div className="w-12 h-6 rounded-full bg-giga-success relative">
-                      <span className="absolute right-1 top-1 w-4 h-4 rounded-full bg-white" />
-                    </div>
+                    <button
+                      onClick={() => setAuditGateEnabled(!auditGateEnabled)}
+                      className={cn(
+                        'w-12 h-6 rounded-full relative transition-colors',
+                        auditGateEnabled ? 'bg-giga-success' : 'bg-gray-600'
+                      )}
+                    >
+                      <span className={cn(
+                        'absolute top-1 w-4 h-4 rounded-full bg-white transition-all',
+                        auditGateEnabled ? 'right-1' : 'left-1'
+                      )} />
+                    </button>
                   </label>
                 </div>
               </div>
+
+              <button 
+                className="btn-primary w-full flex items-center justify-center gap-2"
+                onClick={handleSaveTeam}
+                disabled={updateTeamMutation.isPending}
+              >
+                {updateTeamMutation.isPending ? (
+                  <Loader2 size={16} className="animate-spin" />
+                ) : (
+                  <Save size={16} />
+                )}
+                Save Team Configuration
+              </button>
             </>
           )}
 

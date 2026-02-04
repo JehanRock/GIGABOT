@@ -9,7 +9,7 @@ Provides REST endpoints for:
 - Gateway management
 """
 
-from typing import Any, Callable
+from typing import Any, Callable, Coroutine
 from pathlib import Path
 import uuid
 import asyncio
@@ -22,7 +22,8 @@ def create_api_routes(
     tracker: Any = None,
     sessions: Any = None,
     channels: Any = None,
-    save_config: Callable | None = None,
+    save_config: Callable[[], Coroutine[Any, Any, None]] | None = None,
+    cron_service: Any = None,
 ) -> dict[str, Callable]:
     """
     Create API route handlers.
@@ -32,6 +33,8 @@ def create_api_routes(
         tracker: TokenTracker instance.
         sessions: SessionManager instance.
         channels: ChannelManager instance.
+        save_config: Callback to save configuration.
+        cron_service: CronService instance for scheduled jobs.
     
     Returns:
         Dictionary of route handlers.
@@ -353,6 +356,355 @@ def create_api_routes(
             gateway.last_error = str(e)
             return {"success": False, "status": "unhealthy", "error": str(e)}
     
+    # =====================
+    # Provider Configuration APIs
+    # =====================
+    
+    async def get_providers() -> dict[str, Any]:
+        """Get provider configurations (keys masked)."""
+        if not config:
+            return {"providers": {}, "error": "No configuration"}
+        
+        providers_info = {}
+        provider_names = ["openrouter", "anthropic", "openai", "moonshot", "deepseek", "glm", "qwen", "ollama", "vllm"]
+        
+        for name in provider_names:
+            provider_config = getattr(config.providers, name, None)
+            if provider_config:
+                providers_info[name] = {
+                    "has_key": bool(provider_config.api_key),
+                    "api_base": provider_config.api_base,
+                    "enabled": True,  # Providers are enabled if they have a key
+                }
+        
+        return {"providers": providers_info}
+    
+    async def update_provider(provider_name: str, data: dict[str, Any]) -> dict[str, Any]:
+        """Update a provider's configuration."""
+        if not config:
+            return {"error": "No configuration"}
+        
+        provider_config = getattr(config.providers, provider_name, None)
+        if not provider_config:
+            return {"error": f"Unknown provider: {provider_name}"}
+        
+        # Update fields
+        if "api_key" in data:
+            provider_config.api_key = data["api_key"]
+        if "api_base" in data:
+            provider_config.api_base = data["api_base"]
+        
+        # Save config and trigger agent initialization if needed
+        if save_config:
+            await save_config()
+        
+        return {
+            "success": True,
+            "provider": provider_name,
+            "has_key": bool(provider_config.api_key),
+        }
+    
+    # =====================
+    # Routing Configuration APIs
+    # =====================
+    
+    async def get_routing() -> dict[str, Any]:
+        """Get tiered routing configuration."""
+        if not config:
+            return {"error": "No configuration"}
+        
+        routing = config.agents.tiered_routing
+        return {
+            "enabled": routing.enabled,
+            "fallback_tier": routing.fallback_tier,
+            "tiers": {
+                name: {
+                    "models": tier.models,
+                    "triggers": tier.triggers,
+                }
+                for name, tier in routing.tiers.items()
+            } if routing.tiers else {},
+        }
+    
+    async def update_routing(data: dict[str, Any]) -> dict[str, Any]:
+        """Update routing configuration."""
+        if not config:
+            return {"error": "No configuration"}
+        
+        routing = config.agents.tiered_routing
+        
+        if "enabled" in data:
+            routing.enabled = data["enabled"]
+        if "fallback_tier" in data:
+            routing.fallback_tier = data["fallback_tier"]
+        if "tiers" in data:
+            from nanobot.config.schema import TierConfig
+            for tier_name, tier_data in data["tiers"].items():
+                if tier_name in routing.tiers:
+                    if "models" in tier_data:
+                        routing.tiers[tier_name].models = tier_data["models"]
+                    if "triggers" in tier_data:
+                        routing.tiers[tier_name].triggers = tier_data["triggers"]
+                else:
+                    # Add new tier
+                    routing.tiers[tier_name] = TierConfig(
+                        models=tier_data.get("models", []),
+                        triggers=tier_data.get("triggers", []),
+                    )
+        
+        # Save config
+        if save_config:
+            await save_config()
+        
+        return {"success": True, "routing": await get_routing()}
+    
+    # =====================
+    # Memory Configuration APIs
+    # =====================
+    
+    async def get_memory_config() -> dict[str, Any]:
+        """Get memory system configuration."""
+        if not config:
+            return {"error": "No configuration"}
+        
+        memory = config.agents.memory
+        return {
+            "enabled": memory.enabled,
+            "vector_search": memory.vector_search,
+            "context_memories": memory.context_memories,
+        }
+    
+    async def update_memory_config(data: dict[str, Any]) -> dict[str, Any]:
+        """Update memory configuration."""
+        if not config:
+            return {"error": "No configuration"}
+        
+        memory = config.agents.memory
+        
+        if "enabled" in data:
+            memory.enabled = data["enabled"]
+        if "vector_search" in data:
+            memory.vector_search = data["vector_search"]
+        if "context_memories" in data:
+            memory.context_memories = data["context_memories"]
+        
+        # Save config
+        if save_config:
+            await save_config()
+        
+        return {"success": True, "memory": await get_memory_config()}
+    
+    # =====================
+    # Team Configuration APIs
+    # =====================
+    
+    async def get_team_config() -> dict[str, Any]:
+        """Get team/swarm configuration."""
+        if not config:
+            return {"error": "No configuration"}
+        
+        team = config.agents.team
+        swarm = config.agents.swarm
+        
+        return {
+            "team": {
+                "enabled": team.enabled,
+                "qa_gate_enabled": team.qa_gate_enabled,
+                "audit_gate_enabled": team.audit_gate_enabled,
+                "audit_threshold": team.audit_threshold,
+            },
+            "swarm": {
+                "enabled": swarm.enabled,
+                "max_workers": swarm.max_workers,
+                "worker_model": swarm.worker_model,
+                "orchestrator_model": swarm.orchestrator_model,
+            },
+        }
+    
+    async def update_team_config(data: dict[str, Any]) -> dict[str, Any]:
+        """Update team/swarm configuration."""
+        if not config:
+            return {"error": "No configuration"}
+        
+        if "team" in data:
+            team = config.agents.team
+            team_data = data["team"]
+            if "enabled" in team_data:
+                team.enabled = team_data["enabled"]
+            if "qa_gate_enabled" in team_data:
+                team.qa_gate_enabled = team_data["qa_gate_enabled"]
+            if "audit_gate_enabled" in team_data:
+                team.audit_gate_enabled = team_data["audit_gate_enabled"]
+            if "audit_threshold" in team_data:
+                team.audit_threshold = team_data["audit_threshold"]
+        
+        if "swarm" in data:
+            swarm = config.agents.swarm
+            swarm_data = data["swarm"]
+            if "enabled" in swarm_data:
+                swarm.enabled = swarm_data["enabled"]
+            if "max_workers" in swarm_data:
+                swarm.max_workers = swarm_data["max_workers"]
+            if "worker_model" in swarm_data:
+                swarm.worker_model = swarm_data["worker_model"]
+            if "orchestrator_model" in swarm_data:
+                swarm.orchestrator_model = swarm_data["orchestrator_model"]
+        
+        # Save config
+        if save_config:
+            await save_config()
+        
+        return {"success": True, "config": await get_team_config()}
+    
+    # =====================
+    # Cron Jobs APIs
+    # =====================
+    
+    def _serialize_cron_job(job: Any) -> dict[str, Any]:
+        """Serialize a CronJob to a JSON-compatible dict."""
+        return {
+            "id": job.id,
+            "name": job.name,
+            "enabled": job.enabled,
+            "schedule": {
+                "kind": job.schedule.kind,
+                "at_ms": job.schedule.at_ms,
+                "every_ms": job.schedule.every_ms,
+                "expr": job.schedule.expr,
+                "tz": job.schedule.tz,
+            },
+            "payload": {
+                "kind": job.payload.kind,
+                "message": job.payload.message,
+                "deliver": job.payload.deliver,
+                "channel": job.payload.channel,
+                "to": job.payload.to,
+            },
+            "state": {
+                "next_run_at_ms": job.state.next_run_at_ms,
+                "last_run_at_ms": job.state.last_run_at_ms,
+                "last_status": job.state.last_status,
+                "last_error": job.state.last_error,
+            },
+            "created_at_ms": job.created_at_ms,
+            "updated_at_ms": job.updated_at_ms,
+            "delete_after_run": job.delete_after_run,
+        }
+    
+    async def get_cron_jobs() -> dict[str, Any]:
+        """List all cron jobs."""
+        if not cron_service:
+            return {"jobs": [], "status": {"enabled": False}, "error": "Cron service not available"}
+        
+        jobs = cron_service.list_jobs(include_disabled=True)
+        status = cron_service.status()
+        
+        return {
+            "jobs": [_serialize_cron_job(j) for j in jobs],
+            "status": status,
+        }
+    
+    async def add_cron_job(data: dict[str, Any]) -> dict[str, Any]:
+        """Add a new cron job."""
+        if not cron_service:
+            return {"error": "Cron service not available"}
+        
+        # Validate required fields
+        name = data.get("name")
+        message = data.get("message")
+        schedule_data = data.get("schedule", {})
+        
+        if not name:
+            return {"error": "Job name is required"}
+        if not message:
+            return {"error": "Job message is required"}
+        
+        # Build schedule
+        from nanobot.cron.types import CronSchedule
+        
+        schedule_kind = schedule_data.get("kind", "every")
+        schedule = CronSchedule(
+            kind=schedule_kind,
+            at_ms=schedule_data.get("at_ms"),
+            every_ms=schedule_data.get("every_ms"),
+            expr=schedule_data.get("expr"),
+            tz=schedule_data.get("tz"),
+        )
+        
+        # Validate schedule
+        if schedule_kind == "every" and not schedule.every_ms:
+            return {"error": "every_ms is required for 'every' schedule type"}
+        if schedule_kind == "cron" and not schedule.expr:
+            return {"error": "expr is required for 'cron' schedule type"}
+        if schedule_kind == "at" and not schedule.at_ms:
+            return {"error": "at_ms is required for 'at' schedule type"}
+        
+        job = cron_service.add_job(
+            name=name,
+            schedule=schedule,
+            message=message,
+            deliver=data.get("deliver", False),
+            channel=data.get("channel"),
+            to=data.get("to"),
+            delete_after_run=data.get("delete_after_run", False),
+        )
+        
+        return {"success": True, "job": _serialize_cron_job(job)}
+    
+    async def run_cron_job(job_id: str, force: bool = False) -> dict[str, Any]:
+        """Manually run a cron job."""
+        if not cron_service:
+            return {"error": "Cron service not available"}
+        
+        # Check if job exists
+        jobs = cron_service.list_jobs(include_disabled=True)
+        job = next((j for j in jobs if j.id == job_id), None)
+        
+        if not job:
+            return {"error": f"Job not found: {job_id}"}
+        
+        success = await cron_service.run_job(job_id, force=force)
+        
+        if success:
+            # Refresh job state
+            jobs = cron_service.list_jobs(include_disabled=True)
+            job = next((j for j in jobs if j.id == job_id), None)
+            return {"success": True, "job": _serialize_cron_job(job) if job else None}
+        else:
+            return {"error": "Job is disabled. Use force=true to run anyway."}
+    
+    async def update_cron_job(job_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        """Update a cron job (enable/disable)."""
+        if not cron_service:
+            return {"error": "Cron service not available"}
+        
+        # Check if job exists
+        jobs = cron_service.list_jobs(include_disabled=True)
+        job = next((j for j in jobs if j.id == job_id), None)
+        
+        if not job:
+            return {"error": f"Job not found: {job_id}"}
+        
+        # Currently only supports enable/disable
+        if "enabled" in data:
+            updated_job = cron_service.enable_job(job_id, enabled=data["enabled"])
+            if updated_job:
+                return {"success": True, "job": _serialize_cron_job(updated_job)}
+        
+        return {"success": True, "job": _serialize_cron_job(job)}
+    
+    async def delete_cron_job(job_id: str) -> dict[str, Any]:
+        """Delete a cron job."""
+        if not cron_service:
+            return {"error": "Cron service not available"}
+        
+        success = cron_service.remove_job(job_id)
+        
+        if success:
+            return {"success": True, "deleted_id": job_id}
+        else:
+            return {"error": f"Job not found: {job_id}"}
+    
     return {
         "status": get_status,
         "config": get_config,
@@ -366,6 +718,24 @@ def create_api_routes(
         "update_gateway": update_gateway,
         "delete_gateway": delete_gateway,
         "test_gateway": test_gateway,
+        # Provider management
+        "providers": get_providers,
+        "update_provider": update_provider,
+        # Routing configuration
+        "routing": get_routing,
+        "update_routing": update_routing,
+        # Memory configuration
+        "memory_config": get_memory_config,
+        "update_memory_config": update_memory_config,
+        # Team configuration
+        "team_config": get_team_config,
+        "update_team_config": update_team_config,
+        # Cron Jobs
+        "cron_jobs": get_cron_jobs,
+        "add_cron_job": add_cron_job,
+        "run_cron_job": run_cron_job,
+        "update_cron_job": update_cron_job,
+        "delete_cron_job": delete_cron_job,
     }
 
 

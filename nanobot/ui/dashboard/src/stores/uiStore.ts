@@ -7,6 +7,7 @@ interface AuthStatus {
   require_pin: boolean
   authenticated: boolean
   session_duration_days: number
+  setup_complete?: boolean  // True once initial setup wizard has been run
 }
 
 export type UserMode = 'standard' | 'advanced'

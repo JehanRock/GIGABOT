@@ -6,6 +6,7 @@ Provides:
 - Long-term memory (MEMORY.md)
 - Vector store for semantic search
 - Hybrid search (vector + keyword)
+- Memory evolution (auto-promote, decay, archive, cross-reference)
 """
 
 from nanobot.memory.store import (
@@ -20,6 +21,10 @@ from nanobot.memory.search import (
     HybridSearch,
     search_memories,
 )
+from nanobot.memory.evolution import (
+    MemoryEvolution,
+    EvolutionReport,
+)
 
 __all__ = [
     "MemoryStore",
@@ -28,4 +33,6 @@ __all__ = [
     "SearchResult",
     "HybridSearch",
     "search_memories",
+    "MemoryEvolution",
+    "EvolutionReport",
 ]

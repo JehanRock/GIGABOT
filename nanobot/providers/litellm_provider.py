@@ -496,6 +496,10 @@ class LiteLLMProvider(LLMProvider):
             "temperature": temperature,
         }
         
+        # Always pass API key explicitly for reliability
+        if self.api_key:
+            kwargs["api_key"] = self.api_key
+        
         if api_base:
             kwargs["api_base"] = api_base
         

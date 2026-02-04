@@ -99,7 +99,7 @@ export type WebSocketEvent =
   | { type: 'dashboard:refresh' }
 
 export type WebSocketAction =
-  | { action: 'chat'; message: string; session_id?: string }
+  | { action: 'chat'; message: string; session_id?: string; model?: string; thinking_level?: 'low' | 'medium' | 'high' }
   | { action: 'ping' }
   | { action: 'status' }
   | { action: 'abort'; session_id?: string }
@@ -167,4 +167,58 @@ export interface GatewayTestResult {
   status: 'healthy' | 'unhealthy'
   message?: string
   error?: string
+}
+
+// Provider Configuration Types
+
+export interface ProviderInfo {
+  has_key: boolean
+  api_base: string | null
+  enabled: boolean
+}
+
+export interface ProvidersResponse {
+  providers: Record<GatewayProvider, ProviderInfo>
+}
+
+// Routing Configuration Types
+
+export interface TierConfig {
+  models: string[]
+  triggers: string[]
+}
+
+export interface RoutingConfig {
+  enabled: boolean
+  fallback_tier: string
+  tiers: Record<string, TierConfig>
+}
+
+// Memory Configuration Types
+
+export interface MemoryConfig {
+  enabled: boolean
+  vector_search: boolean
+  context_memories: number
+}
+
+// Team Configuration Types
+
+export interface TeamConfig {
+  enabled: boolean
+  qa_gate_enabled: boolean
+  audit_gate_enabled: boolean
+  audit_threshold: string
+}
+
+export interface SwarmConfig {
+  enabled: boolean
+  max_workers: number
+  worker_model: string
+  orchestrator_model: string
+}
+
+export interface TeamConfigResponse {
+  team: TeamConfig
+  swarm: SwarmConfig
 }

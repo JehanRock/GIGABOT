@@ -25,12 +25,15 @@ const mockHealthChecks = [
 ]
 
 const mockModels = [
-  { id: 'gpt-4', name: 'GPT-4', provider: 'openai', available: true },
-  { id: 'gpt-4-turbo', name: 'GPT-4 Turbo', provider: 'openai', available: true },
-  { id: 'gpt-3.5-turbo', name: 'GPT-3.5 Turbo', provider: 'openai', available: true },
-  { id: 'claude-3-opus', name: 'Claude 3 Opus', provider: 'anthropic', available: true },
-  { id: 'claude-3-sonnet', name: 'Claude 3 Sonnet', provider: 'anthropic', available: true },
-  { id: 'llama-2-70b', name: 'Llama 2 70B', provider: 'together', available: false },
+  { id: 'moonshot/kimi-k2.5', name: 'KIMI K2.5', provider: 'moonshot', available: true },
+  { id: 'anthropic/claude-opus-4.5', name: 'Claude Opus 4.5', provider: 'anthropic', available: true },
+  { id: 'anthropic/claude-sonnet-4.5', name: 'Claude Sonnet 4.5', provider: 'anthropic', available: true },
+  { id: 'google/gemini-3-pro', name: 'Gemini 3 Pro', provider: 'google', available: true },
+  { id: 'google/gemini-3-flash', name: 'Gemini 3 Flash', provider: 'google', available: true },
+  { id: 'openai/gpt-5.2', name: 'GPT 5.2', provider: 'openai', available: true },
+  { id: 'stepfun/step-3.5-flash', name: 'Step 3.5 Flash', provider: 'stepfun', available: true },
+  { id: 'deepseek/deepseek-v3.2', name: 'Deepseek V3.2', provider: 'deepseek', available: true },
+  { id: 'zhipu/glm-4.7', name: 'GLM 4.7', provider: 'zhipu', available: true },
 ]
 
 interface HealthCheck {

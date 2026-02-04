@@ -8,19 +8,25 @@ Predefined patterns for common multi-agent workflows:
 """
 
 from typing import Any
-from dataclasses import dataclass, field
-
-from nanobot.swarm.orchestrator import SwarmTask
 
 
-@dataclass
+def _get_swarm_task():
+    """Lazy import to avoid circular dependency."""
+    from nanobot.swarm.orchestrator import SwarmTask
+    return SwarmTask
+
+
 class SwarmPattern:
     """Base class for swarm patterns."""
-    name: str
-    description: str
-    default_tasks: list[SwarmTask] = field(default_factory=list)
+    name: str = ""
+    description: str = ""
+    default_tasks: list = None
     
-    def generate_tasks(self, objective: str, context: str = "") -> list[SwarmTask]:
+    def __init__(self):
+        if self.default_tasks is None:
+            self.default_tasks = []
+    
+    def generate_tasks(self, objective: str, context: str = "") -> list:
         """Generate tasks for this pattern."""
         return self.default_tasks
 
@@ -38,7 +44,8 @@ class ResearchPattern(SwarmPattern):
     name = "research"
     description = "Research and synthesize information on a topic"
     
-    def generate_tasks(self, objective: str, context: str = "") -> list[SwarmTask]:
+    def generate_tasks(self, objective: str, context: str = "") -> list:
+        SwarmTask = _get_swarm_task()
         return [
             SwarmTask(
                 id="search",
@@ -101,7 +108,8 @@ class CodePattern(SwarmPattern):
     name = "code"
     description = "Implement, test, and refine code"
     
-    def generate_tasks(self, objective: str, context: str = "") -> list[SwarmTask]:
+    def generate_tasks(self, objective: str, context: str = "") -> list:
+        SwarmTask = _get_swarm_task()
         return [
             SwarmTask(
                 id="design",
@@ -170,7 +178,8 @@ class ReviewPattern(SwarmPattern):
     name = "review"
     description = "Analyze, critique, and improve content"
     
-    def generate_tasks(self, objective: str, context: str = "") -> list[SwarmTask]:
+    def generate_tasks(self, objective: str, context: str = "") -> list:
+        SwarmTask = _get_swarm_task()
         return [
             SwarmTask(
                 id="analyze",
@@ -243,7 +252,8 @@ class BrainstormPattern(SwarmPattern):
     name = "brainstorm"
     description = "Generate and develop creative ideas"
     
-    def generate_tasks(self, objective: str, context: str = "") -> list[SwarmTask]:
+    def generate_tasks(self, objective: str, context: str = "") -> list:
+        SwarmTask = _get_swarm_task()
         return [
             SwarmTask(
                 id="generate",
